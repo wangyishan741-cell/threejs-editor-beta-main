@@ -1,0 +1,99 @@
+#nanjing-restore-tools.nanjing-workspace-panel {
+  position: fixed;
+  bottom: 12px;
+  left: var(--editor-workspace-center, calc((100vw + var(--editor-left-width, 0px) - var(--editor-right-width, 0px)) / 2));
+  transform: translateX(-50%);
+  z-index: 250;
+  width: min(480px, max(280px, calc(100vw - var(--editor-left-width, 0px) - var(--editor-right-width, 0px) - 32px)), calc(100vw - 32px));
+  color: #dbe4ef;
+  font: 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  color-scheme: dark;
+}
+.nanjing-workspace-panel * { box-sizing: border-box; }
+.nanjing-workspace-panel [hidden] { display: none !important; }
+.nanjing-workspace-bar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 40px;
+  padding: 5px 6px 5px 13px;
+  border: 1px solid #303b4a;
+  border-radius: 8px;
+  background: #17202df5;
+  box-shadow: 0 6px 20px #0003;
+}
+.nanjing-workspace-mark { width: 6px; height: 6px; border-radius: 50%; background: #82b9ed; flex: none; }
+.nanjing-workspace-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; color: #b9c7d8; }
+.nanjing-workspace-panel button, .nanjing-workspace-panel select, .nanjing-workspace-panel input:not([type="range"]):not([type="checkbox"]) {
+  border: 1px solid #303b4a;
+  border-radius: 6px;
+  background: #202c3a;
+  color: #dbe4ef;
+  padding: 5px 9px;
+  font: inherit;
+  min-height: 30px;
+}
+.nanjing-workspace-panel button { cursor: pointer; transition: background .12s, border-color .12s; }
+.nanjing-workspace-panel button:hover { background: #293b4e; border-color: #536b82; }
+.nanjing-workspace-panel button:focus-visible, .nanjing-workspace-panel input:focus-visible, .nanjing-workspace-panel select:focus-visible, .nanjing-workspace-panel summary:focus-visible { outline: 2px solid #82b9ed; outline-offset: 2px; }
+.nanjing-workspace-panel button:disabled, .nanjing-workspace-panel input:disabled, .nanjing-workspace-panel select:disabled { opacity: .4; cursor: default; }
+.nanjing-workspace-panel .nanjing-workspace-toggle { flex: none; color: #82b9ed; border-color: #3e5871; background: #24364a; min-height: 28px; padding: 3px 10px; }
+.nanjing-workspace-drawer {
+  position: absolute;
+  bottom: 50px;
+  right: 0;
+  width: min(340px, calc(100vw - 32px));
+  max-height: min(70vh, 690px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #303b4a;
+  border-radius: 10px;
+  background: #182230;
+  box-shadow: 0 14px 42px #0006;
+}
+.nanjing-workspace-heading { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px 8px; }
+.nanjing-workspace-heading h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .3px; }
+.nanjing-workspace-panel .nanjing-workspace-close { min-height: 26px; width: 26px; padding: 0; border-color: transparent; background: transparent; color: #90a1b7; font-size: 20px; line-height: 24px; }
+.nanjing-workspace-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; padding: 0 10px 10px; border-bottom: 1px solid #303b4a; }
+.nanjing-workspace-panel .nanjing-workspace-tab { border: 0; background: transparent; color: #93a5bc; }
+.nanjing-workspace-panel .nanjing-workspace-tab[aria-selected="true"] { background: #2b3e53; color: #a5cef6; }
+.nanjing-workspace-panel [data-new-report="true"]::after { content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: #82b9ed; margin-left: 5px; vertical-align: middle; }
+.nanjing-workspace-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #46576b transparent; padding: 2px 14px 14px; }
+.nanjing-workspace-section { padding: 12px 0; border-bottom: 1px solid #303b4a; }
+.nanjing-workspace-section:last-child { border-bottom: 0; padding-bottom: 0; }
+.nanjing-workspace-section h3 { color: #91a4bb; font-size: 11px; font-weight: 500; letter-spacing: .4px; margin: 0 0 10px; }
+.nanjing-workspace-control { justify-content: space-between; min-height: 34px; width: 100%; margin: 3px 0; color: #c7d3e2; }
+.nanjing-workspace-panel label.nanjing-workspace-control { display: flex; align-items: center; gap: 8px; }
+.nanjing-workspace-panel input[type="range"] { flex: 1; width: 112px; min-width: 64px; max-width: 140px; height: 18px; accent-color: #82b9ed; margin: 0 0 0 auto; cursor: pointer; }
+.nanjing-workspace-panel input[type="checkbox"] { accent-color: #82b9ed; width: 14px; height: 14px; margin: 0; flex: none; }
+.nanjing-workspace-control:has(input[type="checkbox"]) { justify-content: flex-start; }
+.nanjing-workspace-control span { color: #91a4bb; text-align: right; font-size: 11px; }
+.nanjing-workspace-panel select { max-width: 190px; min-width: 120px; }
+.nanjing-workspace-panel input[type="number"] { min-width: 76px; text-align: right; }
+.nanjing-workspace-panel input[type="color"] { padding: 3px; min-width: 40px; }
+.nanjing-workspace-details { padding: 11px 0; border-bottom: 1px solid #303b4a; }
+.nanjing-workspace-details summary { color: #cfdaea; cursor: pointer; padding: 2px 0; }
+.nanjing-workspace-detail-controls { display: flex; flex-direction: column; gap: 5px; padding: 10px 0 2px; align-items: stretch; }
+.nanjing-workspace-detail-controls > select { align-self: stretch; max-width: none; }
+.nanjing-workspace-detail-controls > button { margin-top: 5px; align-self: flex-start; }
+.nanjing-workspace-readout { font-size: 11px; line-height: 1.65; color: #95aac1; overflow-wrap: anywhere; margin: 5px 0; }
+.nanjing-workspace-device { margin-top: 12px; padding: 11px; border: 1px solid #303b4a; border-radius: 6px; background: #1d2a39; }
+.nanjing-workspace-device h3 { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.nanjing-workspace-device[data-gpu-kind="intel-integrated"] { border-color: #7c6340; }
+.nanjing-workspace-gpu-name { color: #dbe4ef; font-size: 12px; font-weight: 600; }
+.nanjing-workspace-gpu-badge { padding: 1px 6px; border-radius: 4px; color: #f1cb8f; background: #59452e; font-size: 10px; }
+.nanjing-workspace-gpu-warning { color: #ddbb88; font-size: 11px; margin: 6px 0; }
+.nanjing-workspace-gpu-help { margin-top: 7px; font-size: 11px; color: #95aac1; }
+.nanjing-workspace-gpu-help summary { cursor: pointer; color: #82b9ed; }
+.nanjing-workspace-gpu-help p { margin: 5px 0 0; line-height: 1.65; }
+.nanjing-workspace-report { white-space: pre-wrap; }
+.nanjing-workspace-report:empty { display: none; }
+.nanjing-workspace-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.nanjing-workspace-actions h3, .nanjing-workspace-actions .nanjing-workspace-readout { width: 100%; flex-basis: 100%; }
+.nanjing-workspace-actions h3 { margin-bottom: 2px; }
+.nanjing-workspace-actions > button { flex: 1 1 calc(50% - 7px); white-space: normal; }
+@media (max-width: 900px) {
+  #nanjing-restore-tools.nanjing-workspace-panel { left: 50%; }
+  .nanjing-workspace-drawer { right: 0; max-height: 68vh; }
+}
