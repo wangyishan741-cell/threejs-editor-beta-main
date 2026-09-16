@@ -156,7 +156,7 @@ if (route.query.sceneName) {
     window.editorPreviewSceneImport = window.editorPreviewSceneImmutable && route.query.import === '1' && typeof route.query.project === 'string' && !!route.query.project.trim()
     const name = window.editorPreviewSceneImmutable ? encodeURIComponent(String(route.query.sceneName)) : route.query.sceneName
     const sn = 'editorJson/' + name + '.json'
-    window.editorPreviewSceneUrl = __isProduction__ ? '/threejs-editor-beta/' + sn : '/' + sn
+    window.editorPreviewSceneUrl = import.meta.env.BASE_URL + sn
     
     // Fixed public versions resolve identically in every browser. Legacy
     // example links retain their optional local asset-library override.
