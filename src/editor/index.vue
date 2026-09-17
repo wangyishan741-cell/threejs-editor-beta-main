@@ -38,6 +38,14 @@
           <el-button class="help-action">帮助 <span aria-hidden="true">⌄</span></el-button>
           <template #dropdown><el-dropdown-menu>
             <el-dropdown-item @click="showOperationSettings = true">操作与快捷键</el-dropdown-item>
+            <el-dropdown-item @click="openUrl('https://z2586300277.github.io/editor-docs/')">使用文档</el-dropdown-item>
+            <el-dropdown-item @click="openUrl('https://z2586300277.github.io/three-cesium-examples')">开源案例</el-dropdown-item>
+            <el-dropdown-item divided @click="openUrl('https://z2586300277.github.io/threejs-editor/apply.html')">嵌入项目</el-dropdown-item>
+            <el-dropdown-item @click="openUrl('https://github.com/z2586300277/threejs-editor/tree/main/src/editor/compoents')">组件源码</el-dropdown-item>
+            <el-dropdown-item @click="openUrl('https://github.com/z2586300277/threejs-editor-beta')">编辑器源码</el-dropdown-item>
+            <el-dropdown-item @click="openUrl('https://pan.quark.cn/s/1f507069e8f1')">下载编辑器</el-dropdown-item>
+            <el-dropdown-item @click="openUrl('https://z2586300277.github.io/')">官网</el-dropdown-item>
+            <el-dropdown-item @click="openUrl('https://z2586300277.github.io/three-editor/dist/#/editor')">旧版编辑器</el-dropdown-item>
           </el-dropdown-menu></template>
         </el-dropdown>
         <el-button type="primary" class="save-action" :loading="projectRecordBusy" :disabled="!sceneReady" @click="saveScene">保存工程</el-button>
@@ -103,6 +111,7 @@
     </el-dialog>
   </div>
   <Editor @dblclick="getEvent" :dataCores="dataCores" @emitThreeEditor="emitThreeEditor" class="editor" />
+  <AiPanel v-show="!previewScene" />
 </template>
 
 <script setup>
@@ -112,6 +121,8 @@ import { ElButton, ElSelect, ElOption, ElMessage, ElIcon, ElMessageBox } from 'e
 import { Pointer, Position, RefreshRight, ZoomIn, Remove, Refresh } from '@element-plus/icons-vue'
 import LeftPanel from './left.vue'
 import RightPanel from './right.vue'
+import AiPanel from './ai/aiPanel.vue'
+import { mountSceneAI } from './ai/ai'
 import { useRoute, useRouter, isNavigationFailure } from 'vue-router'
 import { setIndexDB } from './indexDb'
 import { getObjectViews, createGsapAnimation, restoreHistoryHandler } from './lib'
@@ -248,6 +259,7 @@ if (isNanjingRestoreRoute() && !dataCores.options.some(item => item.name === NAN
   dataCores.options.push({ name: NANJING_SCENE_NAME })
 }
 
+const openUrl = (url) => window.open(url, '_blank')
 
 watch(selectChildMode, (val) => threeEditor.handler.selectChildEnabled = val)
 watch(rightClickMenusEnable, (val) => threeEditor.handler.rightClickMenusEnable = val)
@@ -318,6 +330,7 @@ const emitThreeEditor = (threeEditor) => {
   rightPanel.value.helperConf(threeEditor)
   rightPanel.value.startEditor(threeEditor)
   window.threeEditor = threeEditor
+  mountSceneAI(threeEditor)
   scheduleRealisticLightingRefresh(threeEditor)
 
   // 轮询 handler 状态，值变化时才同步到工具栏 Vue ref
