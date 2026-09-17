@@ -28,3 +28,7 @@ cache
 .mcp.json
 .claude
 .cursor
+
+# Reproducible acceptance builds and interrupted cloud-upload markers
+/dist-*-check/
+*.baiduyun.uploading.cfg

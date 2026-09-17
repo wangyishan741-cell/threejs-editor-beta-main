@@ -40,7 +40,6 @@
 import { ref, computed } from 'vue';
 import { ThreeEditor, getObjectViews, createGsapAnimation } from './lib'
 import * as THREE from 'three';
-import { ElMessage } from 'element-plus';
 import { enableObjectShadows, scheduleRealisticLightingRefresh } from './lightingDefaults'
 import ProjectRecords from './projectRecords.vue'
 
@@ -132,25 +131,12 @@ Object.assign(loadingDiv.style, {
   padding: '10px 20px',
   borderRadius: '5px'
 })
-let addList = window.addon_editor_json || []
-if(addList.length) localStorage.setItem('newEditor_addon_editor_json', JSON.stringify(addList))
-else {
-  const local_addon = localStorage.getItem('newEditor_addon_editor_json')
-  if(local_addon) addList = JSON.parse(local_addon)
-}
-const listJ = window.editorJsons.map(v => __isProduction__ ? '/threejs-editor-beta/' + v : '/' + v)
-listJ.splice(9, 0, ...addList)
 const lightTypes = ['环境光', '平行光', '点光源', '聚光灯', '半球光', '平面光'];
 const data = [
   {
     icon: 'FolderOpened',
     title: '工程记录',
     list: []
-  },
-  {
-    icon: 'set-up',
-    title: '配置案例',
-    list: listJ
   },
   {
     icon: 'office-building',
@@ -191,25 +177,6 @@ function setActive(item) {
   searchText.value = '';
 }
 
-let current_scene_url = localStorage.getItem('current_scene_url')
-const loadScene = async (v) => {
-  if(v.indexOf('动画时间线') > -1) {
-    let str = v 
-    const newUrl = str.replace('/editorJson/', '/animateJson/').replace(/动画时间线-/g, '')
-    if(current_scene_url!==newUrl) {
-        const res = await fetch(newUrl).then(res => res.json())
-        localStorage.setItem('current_scene_url', newUrl)
-        localStorage.removeItem('theatre-0.4.persistent')
-        localStorage.setItem('THREE_EDITOR_ANIMATIONS', JSON.stringify(res))
-        ElMessage.success('此场景包含动画时间线, 已加载了动画数据, 即将刷新页面, 再次点击当前场景即可正常查看动画效果')
-        return setTimeout(() => window.location.reload(), 1000)
-    }
-  }
-  fetch(v).then(res => res.json()).then(res => {
-    threeEditor?.resetEditorStorage(res)
-    scheduleRealisticLightingRefresh(threeEditor)
-  })
-}
 const loadModel = (url, point) => {
   const { modelCores } = window.threeEditor
   const { camera, controls, transformControls } = threeEditor
@@ -229,11 +196,7 @@ const loadModel = (url, point) => {
 }
 window.left_loadModel = loadModel
 async function clickLeft(v, point) {
-  if (active.value === '配置案例') {
-    window.currentOnlineSceneName = v.split('/').pop().replace('.json', '')
-    loadScene(v)
-  }
-  else if (active.value === '模型') loadModel(v, point)
+  if (active.value === '模型') loadModel(v, point)
   else if (active.value === '组件') {
     const { scene, transformControls } = threeEditor
     const design = ThreeEditor.__DESIGNS__.find(d => d.label === v)
