@@ -35,6 +35,10 @@ import { applyNanjingContextMaterial } from './nanjingContextMaterial.js'
 import { applyNanjingCurbMaterial } from './nanjingCurbMaterial.js'
 import { createNanjingRoadLevels } from './nanjingRoadLevels.js'
 import { createNanjingTreePlacements } from './nanjingTreePlacements.js'
+import { createNanjingTreeDensity } from './nanjingTreeDensity.js'
+import { createNanjingWaterSurface } from './nanjingWaterSurface.js'
+import { suppressNanjingImportedUtilities } from './nanjingImportedUtilities.js'
+import { applyRequestedWaterUpdate } from './nanjingRequestedWaterUpdate.js'
 import { createNanjingInternalRoadSurfaces } from './nanjingInternalRoadSurfaces.js'
 import { createNanjingContextTextures } from './nanjingContextTextures.js'
 import { createNanjingFacadeFrameFinish } from './nanjingFacadeFrameFinish.js'
@@ -53,6 +57,8 @@ import { publishNanjingProjectSnapshot, nanjingSnapshotEditorUrl } from './nanji
 import { isProjectHistoryRestore, captureNanjingProjectSnapshot, restoreNanjingProjectSnapshot } from './nanjingProjectSnapshot.js'
 import { createNanjingWorkspacePanel } from './nanjingWorkspacePanel.js'
 import './nanjingWorkspacePanel.css'
+import { readNanjingLightingControls, updateNanjingLightingControls } from './nanjingLightingControls.js'
+import { restoreProjectLightingBackgrounds } from './lightingDefaults.js'
 
 export const NANJING_SCENE_NAME = '南京数智城A地块 · Blender还原'
 const CONFIG_URL = '/nanjing-restore/reference-73trees-3db12591b264.json'
@@ -212,12 +218,16 @@ function applyMaterials(editor, config) {
       return material
     }
     object.material = Array.isArray(object.material) ? object.material.map(transform) : transform(object.material)
-    object.castShadow = config.shadows?.castShadow ?? true
-    object.receiveShadow = config.shadows?.receiveShadow ?? true
-    const objectProps = config.objects?.[object.name]
-    if (objectProps) {
-      for (const key of ['visible', 'castShadow', 'receiveShadow', 'renderOrder']) if (objectProps[key] != null) object[key] = objectProps[key]
-      for (const key of ['position', 'rotation', 'scale']) setVector(object[key], objectProps[key])
+    // Apply legacy name-based defaults only on first load. A later GLB/material
+    // refresh must not overwrite individual edits on already-loaded collections.
+    if (!editor.modelCollectionEdits?.shouldPreserveObjectState(object)) {
+      object.castShadow = config.shadows?.castShadow ?? true
+      object.receiveShadow = config.shadows?.receiveShadow ?? true
+      const objectProps = config.objects?.[object.name]
+      if (objectProps) {
+        for (const key of ['visible', 'castShadow', 'receiveShadow', 'renderOrder']) if (objectProps[key] != null) object[key] = objectProps[key]
+        for (const key of ['position', 'rotation', 'scale']) setVector(object[key], objectProps[key])
+      }
     }
   })
   // The editor serializes this material list separately from the GLB hierarchy.
@@ -360,7 +370,7 @@ function snapshotConfig(editor, state) {
   config.helpers = { axes: !!editor.handler.helpers.axes.showAxes, grid: !!editor.handler.helpers.grid.showGrid }
   if (config.environment?.url) config.environment = { ...config.environment, intensity: editor.scene.environmentIntensity, rotation: editor.scene.environmentRotation.toArray().slice(0, 3), background: editor.scene.background === (state.environmentColorBalance?.getStatus().scope === 'lighting-only' ? state.environmentSourceTexture : state.environmentTexture), backgroundIntensity: editor.scene.backgroundIntensity }
   if (editor.scene.background?.isColor) config.background = editor.scene.background.getHex()
-  for (const key of ['contextTextures', 'facadeFrameFinish', 'internalRoadSurfaces']) {
+  for (const key of ['waterSurface', 'contextTextures', 'facadeFrameFinish', 'internalRoadSurfaces']) {
     if (config[key]?.version === 1 && state[key]) config[key] = structuredClone(state[key].getStatus().settings)
   }
   config.materials = {}
@@ -381,7 +391,7 @@ function snapshotConfig(editor, state) {
     for (const renderedMaterial of (Array.isArray(object.material) ? object.material : [object.material]).filter(Boolean)) {
       // Public getConfig can run outside source-save wrappers. Never publish
       // display-only texture/PBR copies as same-name editable source rules.
-      const material = [state.contextTextures, state.facadeFrameFinish, state.internalRoadSurfaces]
+      const material = [state.waterSurface, state.contextTextures, state.facadeFrameFinish, state.internalRoadSurfaces]
         .reduce((value, controller) => controller?.getOriginalMaterial?.(value) || value, renderedMaterial)
       if (!material.name || config.materials[material.name]) continue
       const props = material.type === 'MeshPhysicalMaterial' ? { type: material.type } : {}
@@ -495,14 +505,18 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     updateAppearanceStatus()
   }
   const syncEditedMaterials = () => {
+    state.waterSurface?.syncMaterialEdits?.()
     state.contextTextures?.syncMaterialEdits?.()
     state.facadeFrameFinish?.syncMaterialEdits?.()
     state.internalRoadSurfaces?.syncMaterialEdits?.()
   }
   const refreshSceneDependencies = () => {
+    state.importedUtilities = suppressNanjingImportedUtilities(editor)
+    state.waterSurface?.refresh()
     state.contextTextures?.refresh()
     state.facadeFrameFinish?.refresh()
     state.internalRoadSurfaces?.refresh()
+    state.treeDensity?.refresh()
     state.treePlacements?.refresh()
     state.roadMarkingRecovery?.refresh()
     state.junctionPaving?.refresh()
@@ -545,7 +559,7 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
   const previousMaterialSourceResolver = editor.getNanjingSourceMaterial
   const materialSourceResolver = material => {
     if (!state.active || state.destroyed) return material
-    const controllers = [state.contextTextures, state.facadeFrameFinish, state.internalRoadSurfaces]
+    const controllers = [state.waterSurface, state.contextTextures, state.facadeFrameFinish, state.internalRoadSurfaces]
     controllers.forEach(controller => controller?.syncMaterialEdits?.())
     return controllers.reduce((value, controller) => controller?.getOriginalMaterial?.(value) || value, material)
   }
@@ -615,6 +629,15 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     }
   }
   editor.transformControls.addEventListener('objectChange', invalidateShadows)
+  const collectionChanged = event => {
+    const structure = !!event.structure
+    state.instancing?.invalidate({ rebuild: structure })
+    state.selection?.invalidate({ structure })
+    state.contactShadows?.invalidate?.({ structure })
+    if (structure) state.cssInventoryDirty = true
+    invalidateShadows(); invalidateRender()
+  }
+  editor.scene.addEventListener('collection-changed', collectionChanged)
   editor.transformControls.addEventListener('change', invalidateRender)
   editor.controls.addEventListener('change', invalidateRender)
   editor.controls.addEventListener('change', scheduleLod)
@@ -767,6 +790,7 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
   } })
   document.addEventListener('visibilitychange', visibilityChanged)
   const originalSave = editor.saveSceneEdit.bind(editor)
+  const previousSourceScene = editor.withNanjingSourceScene
   const originalReset = editor.resetEditorStorage.bind(editor)
   const panel = document.createElement('div')
   panel.id = 'nanjing-restore-tools'
@@ -1058,6 +1082,60 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     state.internalRoadSurfaces?.update({ enabled: roadTextureToggle.checked, visibleRoadDecks: roadTextureToggle.checked })
     markAppearanceEdited(); state.instancing?.invalidate(); invalidateRender()
   }
+  const waterDetails = document.createElement('details')
+  const waterSummary = document.createElement('summary'); waterSummary.textContent = '水面'; waterSummary.style.cursor = 'pointer'
+  const waterControls = document.createElement('div'); waterControls.style.cssText = glassControls.style.cssText
+  waterControls.dataset.nanjingUniformControl = 'true'
+  waterDetails.append(waterSummary, waterControls); buttonRow.append(waterDetails)
+  const waterLabel = document.createElement('label'); waterLabel.style.cssText = shadowLabel.style.cssText
+  const waterEnabled = document.createElement('input'); waterEnabled.type = 'checkbox'; waterEnabled.setAttribute('aria-label', '自然水面')
+  waterLabel.append(waterEnabled, '自然水面'); waterControls.append(waterLabel)
+  const waterStatus = document.createElement('span'); waterStatus.setAttribute('role', 'status')
+  waterStatus.style.cssText = 'font-size:12px;color:#b7ccdb'
+  waterControls.append(waterStatus)
+  const waterNumbers = {}
+  for (const [key, label, min, max] of [['rippleStrength', '水纹强度', 0, 1], ['rippleScale', '水纹密度', .05, 8], ['roughness', '水面粗糙度', .08, 1], ['envMapIntensity', '水面反射', 0, 2]]) {
+    const wrapper = document.createElement('label'); wrapper.style.cssText = shadowLabel.style.cssText; wrapper.textContent = label
+    const input = document.createElement('input'); input.type = 'number'; input.min = min; input.max = max; input.step = '.01'
+    input.setAttribute('aria-label', label); input.style.cssText = qualitySelect.style.cssText + ';width:65px'
+    input.onkeydown = event => event.stopPropagation()
+    input.onchange = () => {
+      if (input.value.trim() && Number.isFinite(Number(input.value))) {
+        state.waterSurface?.update({ [key]: Number(input.value) }); markAppearanceEdited(); invalidateRender()
+      }
+      syncWaterControls()
+    }
+    wrapper.append(input); waterControls.append(wrapper); waterNumbers[key] = input
+  }
+  function syncWaterControls() {
+    const status = state.waterSurface?.getStatus(), settings = status?.settings
+    waterEnabled.checked = settings?.enabled === true; waterEnabled.disabled = baseline || !state.waterSurface
+    waterStatus.textContent = settings?.enabled ? status?.active ? '自然水面已生效' : '水面尚未生效，请检查模型是否已加载' : '原水面材质'
+    for (const [key, input] of Object.entries(waterNumbers)) { input.value = Number(settings?.[key] ?? 0).toFixed(2); input.disabled = !settings?.enabled }
+  }
+  waterEnabled.onchange = async () => {
+    if (!state.waterSurface || !state.applicationReady) { syncWaterControls(); return }
+    const enabled = waterEnabled.checked; waterEnabled.disabled = true
+    const generation = state.generation, config = state.config
+    const isCurrent = () => !state.destroyed && generation === state.generation && config === state.config
+    const previous = structuredClone(config.waterSurface), hadSettings = Object.hasOwn(config, 'waterSurface')
+    const previousSettings = state.waterSurface.getStatus().settings
+    try {
+      await save({ label: '调整自然水面前' })
+      if (!isCurrent()) return
+      state.waterSurface.update({ enabled }); markAppearanceEdited(); invalidateRender()
+      if (enabled && !state.waterSurface.getStatus().active) throw new Error('未找到可启用的水面对象，已保留原材质')
+      await save({ label: enabled ? '启用自然细波纹水面' : '恢复原水面材质' })
+    } catch (error) {
+      if (isCurrent()) {
+        state.waterSurface?.update(previousSettings)
+        if (hadSettings) config.waterSurface = previous
+        else delete config.waterSurface
+        invalidateRender(); setStatus('水面更新失败：' + error.message)
+      }
+    }
+    finally { if (isCurrent()) syncWaterControls() }
+  }
   const fogDetails = document.createElement('details')
   const fogSummary = document.createElement('summary'); fogSummary.textContent = '远景雾'; fogSummary.style.cursor = 'pointer'
   const fogControls = document.createElement('div'); fogControls.style.cssText = glassControls.style.cssText
@@ -1331,6 +1409,22 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     return editor.renderer.shadowMap.enabled && editor.renderer.shadowMap.needsUpdate
       && editor.scene.children.some(object => object.isLight && object.visible && object.castShadow)
   }
+  function applyTreeDensity(ratio = state.config?.performance?.treeDensity ?? 100) {
+    state.treeDensity ||= createNanjingTreeDensity(editor, {
+      getInstancingGroup: () => state.instancing?.group,
+      getOriginalGeometry: geometry => {
+        const source = state.trunkLod?.getOriginalGeometry(geometry) || geometry
+        return state.lod?.getOriginalGeometry(source) || source
+      }, onChange: () => {
+      state.instancing?.invalidate()
+      state.instancing?.syncIfNeeded({ force: true })
+      state.shadows?.updateLayers({ invalidate: true })
+      state.contactShadows?.invalidate?.({ structure: true })
+      invalidateShadows(); invalidateRender()
+    } })
+    state.treeDensity.setRatio(ratio)
+    treeDensity.value = String(state.treeDensity.getStatus().ratio)
+  }
   async function apply(config, { view = true, lights = true } = {}) {
     if (!state.active) return
     cancelSceneRefresh()
@@ -1418,12 +1512,16 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     state.junctionPaving = null
     state.roadMarkingRecovery?.dispose()
     state.roadMarkingRecovery = null
+    state.waterSurface?.dispose()
+    state.waterSurface = null
     state.contextTextures?.dispose()
     state.contextTextures = null
     state.facadeFrameFinish?.dispose()
     state.facadeFrameFinish = null
     state.internalRoadSurfaces?.dispose()
     state.internalRoadSurfaces = null
+    state.treeDensity?.dispose()
+    state.treeDensity = null
     state.treePlacements?.dispose()
     state.treePlacements = null
     state.roadLevels?.dispose()
@@ -1434,6 +1532,9 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     state.facadeGlazing = baseline || historyMode() || config.facadeGlazing?.enabled === false ? null : prepareNanjingFacadeGlazing(editor, config)
     state.roofEquipment = baseline || historyMode() ? null : prepareNanjingRoofEquipment(editor, config)
     Object.assign(state, applyMaterials(editor, config))
+    editor.modelCollectionEdits?.restoreAll()
+    await editor.materialTexturePersistence?.restoreAll()
+    if (!isCurrent()) return
     state.contextMaterial = baseline || historyMode() ? null : applyNanjingContextMaterial(editor, config)
     state.curbMaterial = baseline || historyMode() ? null : applyNanjingCurbMaterial(editor, config)
     if (historyMode()) {
@@ -1450,8 +1551,11 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     state.roadLevels = baseline || historyMode() && !state.metadata?.historySnapshot?.roadLevels ? null
       : createNanjingRoadLevels(editor, config, { onChange: invalidateRender,
         snapshot: historyMode() ? state.metadata?.historySnapshot?.roadLevels : undefined })
+    state.importedUtilities = baseline ? null : suppressNanjingImportedUtilities(editor)
     state.treePlacements = baseline ? null : createNanjingTreePlacements(editor, config, { onChange: invalidateRender })
     state.internalRoadSurfaces = baseline ? null : createNanjingInternalRoadSurfaces(editor, config, { onChange: invalidateRender })
+    state.waterSurface = baseline ? null : createNanjingWaterSurface(editor, config, { onChange: invalidateRender })
+    syncWaterControls()
     state.contextTextures = baseline ? null : createNanjingContextTextures(editor, config, { onChange: invalidateRender })
     state.facadeFrameFinish = baseline ? null : createNanjingFacadeFrameFinish(editor, config, { onChange: invalidateRender })
     if (!baseline) state.shadows = createNanjingShadows(editor, config, {
@@ -1493,6 +1597,7 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     state.roadMarkingRecovery = baseline ? null : createNanjingRoadMarkingRecovery(editor, config, { onChange: invalidateRender })
     state.junctionPaving = baseline ? null : createNanjingJunctionPaving(editor, config, { onChange: invalidateRender })
     state.instancing.rebuild()
+    applyTreeDensity(config.performance?.treeDensity ?? 100)
     if (!baseline) state.selection = createNanjingSelection(editor, { onChange: invalidateRender })
     // Keep the opt-in off for older records until native GPU A/B validation.
     state.foliageZeroAlpha = baseline ? null : createNanjingFoliageZeroAlpha(editor, {
@@ -1503,6 +1608,7 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     await applyEnvironment(editor, config, state, isCurrent)
     if (!isCurrent()) return
     if (!baseline && (!historyMode() || config.surfaceLighting)) state.surfaceLighting = createNanjingSurfaceLighting(editor, config, { onChange: invalidateRender })
+    restoreProjectLightingBackgrounds(editor)
     syncSurfaceLightingControls()
     environmentStrength.value = String(editor.scene.environmentIntensity)
     editor.transformControls.detach()
@@ -1518,7 +1624,29 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     state.shadows?.update()
     if (!state.reflectionPending) readyBenchmark()
     state.applicationReady = true
+    editor.scene.dispatchEvent({ type: 'project-lighting-settings-changed' })
     updateAppearanceStatus()
+    // Allow the core load-completion callback to clear its loading guard before
+    // making the two requested version records. Only the named working copy is
+    // eligible; public inspection pages and later history restores stay intact.
+    const routeParams = new URLSearchParams(window.location.hash.split('?')[1] || '')
+    const immutableView = routeParams.has('sceneName') && !(routeParams.get('edit') === '1' && routeParams.get('import') === '1')
+    if (!baseline && !immutableView && !routeParams.has('inspection')) {
+      requestAnimationFrame(() => {
+        if (!isCurrent() || state.requestedWaterUpdate) return
+        state.requestedWaterUpdate = (async () => {
+          const deadline = performance.now() + 30000
+          while (isCurrent() && editor.__projectLoading && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100))
+          if (!isCurrent() || editor.__projectLoading) return false
+          return applyRequestedWaterUpdate({ projectName: currentProjectName(), config,
+          sourceVersionId: state.params?.projectHistory?.sourceVersionId, storage: localStorage, save,
+          getWater: () => state.waterSurface, isCurrent })
+        })().then(changed => {
+          if (changed && isCurrent()) { syncWaterControls(); invalidateRender() }
+        }).catch(error => { if (isCurrent()) setStatus('自然水面版本保留失败：' + error.message) })
+          .finally(() => { state.requestedWaterUpdate = null })
+      })
+    }
   }
   function ensureModel() {
     if (editor.scene.children.some(object => object.editorType === 'isModelGroup')) return Promise.resolve()
@@ -1575,6 +1703,7 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
       try {
         if (state.active) for (const [material] of foliagePasses) material.forceSinglePass = false
         const data = originalSave()
+        editor.modelCollectionEdits?.annotateSave(data)
         if (state.active) {
           // The GLB referenced by modelInfo.url already contains the full model
           // hierarchy and source material table. Keep the JSON as a light
@@ -1603,9 +1732,13 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
         return data
       } finally { for (const [material, singlePass] of foliagePasses) material.forceSinglePass = singlePass }
     }
-    const sourceRoadLevels = () => state.roadLevels ? state.roadLevels.withOriginals(serialize) : serialize()
+    return withNanjingSourceScene(serialize)
+  }
+  function withNanjingSourceScene(callback) {
+    const sourceRoadLevels = () => state.roadLevels ? state.roadLevels.withOriginals(callback) : callback()
     const sourceInternalRoadMaterials = () => state.internalRoadSurfaces ? state.internalRoadSurfaces.withOriginals(sourceRoadLevels) : sourceRoadLevels()
-    const sourceContextTextureMaterials = () => state.contextTextures ? state.contextTextures.withOriginals(sourceInternalRoadMaterials) : sourceInternalRoadMaterials()
+    const sourceWaterMaterials = () => state.waterSurface ? state.waterSurface.withOriginals(sourceInternalRoadMaterials) : sourceInternalRoadMaterials()
+    const sourceContextTextureMaterials = () => state.contextTextures ? state.contextTextures.withOriginals(sourceWaterMaterials) : sourceWaterMaterials()
     const sourceFrameMaterials = () => state.facadeFrameFinish ? state.facadeFrameFinish.withOriginals(sourceContextTextureMaterials) : sourceContextTextureMaterials()
     const sourceTreePlacements = () => state.treePlacements ? state.treePlacements.withOriginals(sourceFrameMaterials) : sourceFrameMaterials()
     const sourceShadowMaterials = () => state.transparentShadows ? state.transparentShadows.withOriginals(sourceTreePlacements) : sourceTreePlacements()
@@ -1613,12 +1746,14 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     const trunkGeometry = () => state.trunkLod ? state.trunkLod.withOriginals(reflectionMaterials) : reflectionMaterials()
     const sourceGeometry = () => state.lod ? state.lod.withOriginals(trunkGeometry) : trunkGeometry()
     const sourceTangents = () => state.materialTangents ? state.materialTangents.withOriginals(sourceGeometry) : sourceGeometry()
-    const sourceObjects = () => state.instancing ? state.instancing.withOriginals(sourceTangents) : sourceTangents()
+    const sourceTreeDensity = () => state.treeDensity ? state.treeDensity.withOriginals(sourceTangents) : sourceTangents()
+    const sourceObjects = () => state.instancing ? state.instancing.withOriginals(sourceTreeDensity) : sourceTreeDensity()
     const sourceMarkings = () => state.roadMarkingRecovery ? state.roadMarkingRecovery.withOriginals(sourceObjects) : sourceObjects()
     const sourcePaving = () => state.junctionPaving ? state.junctionPaving.withOriginals(sourceMarkings) : sourceMarkings()
     const sourceFoliage = () => state.foliageZeroAlpha ? state.foliageZeroAlpha.withOriginals(sourcePaving) : sourcePaving()
     return state.selection ? state.selection.withOriginals(sourceFoliage) : sourceFoliage()
   }
+  editor.withNanjingSourceScene = withNanjingSourceScene
   editor.resetEditorStorage = params => {
     cancelSceneRefresh()
     state.profiler?.cancel()
@@ -1665,12 +1800,16 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     state.junctionPaving = null
     state.roadMarkingRecovery?.dispose()
     state.roadMarkingRecovery = null
+    state.waterSurface?.dispose()
+    state.waterSurface = null
     state.contextTextures?.dispose()
     state.contextTextures = null
     state.facadeFrameFinish?.dispose()
     state.facadeFrameFinish = null
     state.internalRoadSurfaces?.dispose()
     state.internalRoadSurfaces = null
+    state.treeDensity?.dispose()
+    state.treeDensity = null
     state.treePlacements?.dispose()
     state.treePlacements = null
     state.roadLevels?.dispose()
@@ -1687,17 +1826,22 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     editor.__nanjingRestoreActive = state.active
     editor.renderer.shadowMap.autoUpdate = state.active ? false : state.previousShadowAutoUpdate
     panel.style.display = state.active ? 'block' : 'none'
+    editor.modelCollectionEdits?.setParams(params)
     const result = originalReset(params)
-    if (state.active) start(false, !!params.modelCores?.length)
+    if (state.active) start(false, !!params.modelCores?.length || params.modelCollections?.version === 1)
     return result
   }
   const previousAdd = editor.scene.ADDCALL
   editor.scene.ADDCALL = function (object) {
     if (object.userData?.nanjingUtility) return
+    editor.modelCollectionEdits?.registerRoot(object)
     if (state.active && object.editorType === 'isModelGroup' && !historyMode()) {
       state.materialBindings = restoreNanjingMaterialBindings(object, state.params)
     }
     previousAdd?.call(this, object)
+    if (!state.active && object.editorType === 'isModelGroup') queueMicrotask(() => {
+      if (object.parent === editor.scene) editor.modelCollectionEdits?.restoreRoot(object)
+    })
     state.contactShadows?.invalidate?.({ structure: true })
     state.cssInventoryDirty = true
     state.instancing?.invalidate({ rebuild: true })
@@ -1712,7 +1856,9 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
           disposeReflections()
           state.transparentShadows?.dispose()
           state.transparentShadows = null
-          state.contextTextures?.dispose()
+          state.waterSurface?.dispose()
+    state.waterSurface = null
+    state.contextTextures?.dispose()
           state.contextTextures = null
           state.facadeFrameFinish?.dispose()
           state.facadeFrameFinish = null
@@ -1728,16 +1874,23 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
           state.internalRoadSurfaces?.dispose()
           state.internalRoadSurfaces = null
           Object.assign(state, applyMaterials(editor, state.config))
+          editor.modelCollectionEdits?.restoreAll()
+          await editor.materialTexturePersistence?.restoreAll()
+          if (!isCurrent()) return
           state.contextMaterial = baseline || historyMode() ? null : applyNanjingContextMaterial(editor, state.config)
           state.curbMaterial = baseline || historyMode() ? null : applyNanjingCurbMaterial(editor, state.config)
           if (historyMode()) {
             state.historySnapshot = await restoreNanjingProjectSnapshot(editor, state.metadata?.historySnapshot, { isCurrent })
             if (!isCurrent()) return
           } else state.distantBuildingTexture?.refresh()
+          state.importedUtilities = baseline ? null : suppressNanjingImportedUtilities(editor)
           state.internalRoadSurfaces = baseline ? null : createNanjingInternalRoadSurfaces(editor, state.config, { onChange: invalidateRender })
+          state.waterSurface = baseline ? null : createNanjingWaterSurface(editor, state.config, { onChange: invalidateRender })
+          syncWaterControls()
           state.contextTextures = baseline ? null : createNanjingContextTextures(editor, state.config, { onChange: invalidateRender })
           state.facadeFrameFinish = baseline ? null : createNanjingFacadeFrameFinish(editor, state.config, { onChange: invalidateRender })
           state.roadLevels?.refresh()
+          state.treeDensity?.refresh()
           state.treePlacements?.refresh()
           state.roadMarkingRecovery?.refresh()
           state.junctionPaving?.refresh()
@@ -1763,7 +1916,8 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
             const textureController = state.distantBuildingTexture
             if (textureController) void textureController.ready.then(() => {
               if (isCurrent() && state.distantBuildingTexture === textureController) {
-                state.contextTextures?.refresh()
+                state.waterSurface?.refresh()
+    state.contextTextures?.refresh()
                 state.transparentBlocks?.refresh()
                 initializeReflections()
               }
@@ -1909,7 +2063,7 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
         foliageZeroAlpha: state.foliageZeroAlpha?.getStatus(),
         contextMaterial: state.contextMaterial,
         curbMaterial: state.curbMaterial,
-        materialTangents: state.materialTangents?.getStatus(), roofEquipment: state.roofEquipment, distantBuildingTexture: state.distantBuildingTexture?.getStatus(), roadLevels: state.roadLevels?.getStatus(), roadMarkingRecovery: state.roadMarkingRecovery?.getStatus(), treePlacements: state.treePlacements?.getStatus(), junctionPaving: state.junctionPaving?.getStatus(), internalRoadSurfaces: state.internalRoadSurfaces?.getStatus(), contextTextures: state.contextTextures?.getStatus(), facadeFrameFinish: state.facadeFrameFinish?.getStatus(), shadows: state.shadows?.getStatus(), fog: state.fog?.getStatus(),
+        materialTangents: state.materialTangents?.getStatus(), treeDensity: state.treeDensity?.getStatus(), waterSurface: state.waterSurface?.getStatus(), roofEquipment: state.roofEquipment, distantBuildingTexture: state.distantBuildingTexture?.getStatus(), roadLevels: state.roadLevels?.getStatus(), roadMarkingRecovery: state.roadMarkingRecovery?.getStatus(), treePlacements: state.treePlacements?.getStatus(), junctionPaving: state.junctionPaving?.getStatus(), internalRoadSurfaces: state.internalRoadSurfaces?.getStatus(), contextTextures: state.contextTextures?.getStatus(), facadeFrameFinish: state.facadeFrameFinish?.getStatus(), shadows: state.shadows?.getStatus(), fog: state.fog?.getStatus(),
         surfaceLighting: state.surfaceLighting?.getStatus(),
         foliageTextureFix: state.foliageTextureFix,
         materialBindings: state.materialBindings, materialBindingSave: state.materialBindingSave,
@@ -2337,6 +2491,19 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
       markAppearanceEdited(); refreshEditedScene({ materialsOnly: true }); invalidateRender()
       setStatus('已删除远景大楼贴图')
     },
+    '删除异常漂浮物': () => {
+      // GPU imports commonly store trunks and foliage under different parents.
+      // A trunk-only parent is source geometry, not evidence of a floating prop.
+      // Only identified, old exported road/paving utilities may be suppressed.
+      state.importedUtilities = suppressNanjingImportedUtilities(editor)
+      state.roadMarkingRecovery?.refresh()
+      state.junctionPaving?.refresh()
+      applyTreeDensity()
+      state.instancing?.invalidate({ rebuild: true })
+      state.contactShadows?.invalidate?.({ structure: true })
+      markAppearanceEdited(); invalidateShadows(); invalidateRender()
+      setStatus(state.importedUtilities.hidden ? `已处理 ${state.importedUtilities.hidden} 个旧标线和铺装副本` : '未发现可确认的旧标线或铺装副本')
+    },
     '替换 HDR': () => {
       const input = document.createElement('input')
       input.type = 'file'; input.accept = '.hdr,.exr,.png,.jpg,.jpeg'
@@ -2593,6 +2760,23 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
   }
   updateFoliageZeroAlphaButton()
   buttonRow.append(foliageZeroAlphaButton)
+  const treeDensityLabel = document.createElement('label')
+  treeDensityLabel.style.cssText = 'display:flex;align-items:center;gap:5px'
+  treeDensityLabel.textContent = '树木保留'
+  const treeDensity = document.createElement('input')
+  treeDensity.type = 'range'; treeDensity.min = '0'; treeDensity.max = '100'; treeDensity.step = '1'
+  treeDensity.style.width = '72px'
+  treeDensity.setAttribute('aria-label', '树木保留')
+  treeDensity.title = '按比例随机减少树木数量；整棵树连同树干和阴影同步减少；100% 全部保留，0% 全部隐藏。'
+  treeDensity.value = String(state.config?.performance?.treeDensity ?? 100)
+  treeDensity.oninput = () => {
+    const value = Number(treeDensity.value)
+    if (state.config) state.config.performance = { ...state.config.performance, treeDensity: value }
+    applyTreeDensity(value)
+    markAppearanceEdited()
+  }
+  treeDensityLabel.append(treeDensity)
+  buttonRow.append(treeDensityLabel)
   Object.entries(actions).forEach(([label, action]) => {
     const button = document.createElement('button')
     button.textContent = label
@@ -2606,12 +2790,29 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     effectControls: [surfaceLabel, shadowLabel, shadowResolutionLabel, layerLabel, layerStrengthLabel, transparentShadowLabel, contactLabel], roadTextureLabel,
     glassDetails, glassControls, fogDetails, fogControls })
   editor.nanjingRestore = { apply: config => apply(config), reload: () => start(true), save, updateReflections, importProjectFiles,
+    getLightingSettings: () => readNanjingLightingControls(editor),
+    setLightingSettings: patch => {
+      if (!state.active || state.destroyed || !state.config) throw new Error('场景光照尚未载入，请稍后调整')
+      const settings = updateNanjingLightingControls(editor, patch)
+      if (Object.hasOwn(patch, 'ambientIntensity')) {
+        for (const material of facadeMaterials()) if (material.envMap) material.envMapIntensity = settings.ambientIntensity
+        environmentStrength.value = String(settings.ambientIntensity)
+      }
+      state.surfaceLighting?.update({})
+      markAppearanceEdited(); invalidateRender()
+      editor.scene.dispatchEvent({ type: 'project-lighting-settings-changed' })
+      return settings
+    },
     getStatus: () => ({ active: state.active, ready: !!state.meshes && !state.destroyed, message: state.message, meshes: state.meshes, materials: state.materials, frame: state.frameStats,
-      instancing: state.instancing?.getStats(), foliageZeroAlpha: state.foliageZeroAlpha?.getStatus(), reflections: state.reflections?.getStatus() }), getConfig: () => snapshotConfig(editor, state) }
+      instancing: state.instancing?.getStats(), treeDensity: state.treeDensity?.getStatus(), foliageZeroAlpha: state.foliageZeroAlpha?.getStatus(), reflections: state.reflections?.getStatus() }), getConfig: () => snapshotConfig(editor, state) }
   const destroy = editor.destroySceneRender.bind(editor)
   editor.destroySceneRender = () => {
     cancelSceneRefresh()
     state.destroyed = true
+    if (editor.withNanjingSourceScene === withNanjingSourceScene) {
+      if (previousSourceScene) editor.withNanjingSourceScene = previousSourceScene
+      else delete editor.withNanjingSourceScene
+    }
     state.benchmarkQualityRestore = null
     if (editor.requestNanjingMaterialRender === materialRenderRequest) {
       if (previousMaterialRenderRequest === undefined) delete editor.requestNanjingMaterialRender
@@ -2654,12 +2855,16 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     state.junctionPaving = null
     state.roadMarkingRecovery?.dispose()
     state.roadMarkingRecovery = null
+    state.waterSurface?.dispose()
+    state.waterSurface = null
     state.contextTextures?.dispose()
     state.contextTextures = null
     state.facadeFrameFinish?.dispose()
     state.facadeFrameFinish = null
     state.internalRoadSurfaces?.dispose()
     state.internalRoadSurfaces = null
+    state.treeDensity?.dispose()
+    state.treeDensity = null
     state.treePlacements?.dispose()
     state.treePlacements = null
     state.roadLevels?.dispose()
@@ -2680,6 +2885,7 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     workspacePanel.dispose()
     panel.remove()
     editor.transformControls.removeEventListener('objectChange', invalidateShadows)
+    editor.scene.removeEventListener('collection-changed', collectionChanged)
     editor.transformControls.removeEventListener('change', invalidateRender)
     editor.controls.removeEventListener('change', invalidateRender)
     editor.controls.removeEventListener('change', scheduleLod)
@@ -2692,5 +2898,6 @@ export function installNanjingRestore(editor, initialParams, { getProjectName } 
     document.removeEventListener('visibilitychange', visibilityChanged)
     destroy()
   }
-  if (state.active) start(false, !!initialParams.modelCores?.length)
+  if (state.active) start(false, !!initialParams.modelCores?.length || initialParams.modelCollections?.version === 1)
+  else editor.modelCollectionEdits?.restoreAll()
 }

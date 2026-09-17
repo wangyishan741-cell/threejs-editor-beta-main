@@ -127,7 +127,7 @@ import { useRoute, useRouter, isNavigationFailure } from 'vue-router'
 import { setIndexDB } from './indexDb'
 import { getObjectViews, createGsapAnimation, restoreHistoryHandler } from './lib'
 import * as THREE from 'three'
-import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
+import { exportSourceSceneGlb } from './sourceSceneExport.js'
 import { enableObjectShadows, scheduleRealisticLightingRefresh } from './lightingDefaults'
 import { isNanjingRestoreRoute, NANJING_SCENE_NAME } from './nanjingRestore'
 import { listProjectRecords, readProjectScene, saveProjectScene, removeProjectRecord, touchProjectRecord, restoreProjectVersion } from './projectRecords.js'
@@ -156,7 +156,7 @@ if (route.query.sceneName) {
     window.editorPreviewSceneImport = window.editorPreviewSceneImmutable && route.query.import === '1' && typeof route.query.project === 'string' && !!route.query.project.trim()
     const name = window.editorPreviewSceneImmutable ? encodeURIComponent(String(route.query.sceneName)) : route.query.sceneName
     const sn = 'editorJson/' + name + '.json'
-    window.editorPreviewSceneUrl = import.meta.env.BASE_URL + sn
+    window.editorPreviewSceneUrl = __isProduction__ ? '/threejs-editor-beta/' + sn : '/' + sn
     
     // Fixed public versions resolve identically in every browser. Legacy
     // example links retain their optional local asset-library override.
@@ -174,7 +174,7 @@ const dialogVisible = ref(false);
 const inputSceneName = ref('');
 const projectDialogMode = ref('new')
 const currentMode = ref('平移')
-const selectChildMode = ref(false)
+const selectChildMode = ref(true)
 const previewScene = ref(false)
 const leftCollapsed = ref(window.innerWidth < 1000)
 const rightCollapsed = ref(window.innerWidth < 1200)
@@ -291,10 +291,22 @@ if (localStorage.getItem('new_previewScene') === 'true') {
 }
 
 watch(currentMode, (val) => {
-  const { transformControls } = threeEditor
-  if (val === '选中') threeEditor.handler.mode = 'select'
-  else if(val === '预览') threeEditor.handler.mode = 'none'
-  else threeEditor.handler.mode = 'transform'
+  if (!editorInstance) return
+  const { transformControls, handler } = editorInstance
+  const selected = transformControls.object || editorInstance.effectComposer?.effectPass?.outlinePass?.selectedObjects?.[0]
+  if (val === '选中') {
+    handler.mode = 'select'
+    transformControls.detach()
+    editorInstance.setOutlinePass(selected?.parent ? [selected] : [])
+  } else if(val === '预览') {
+    handler.mode = 'none'
+    transformControls.detach()
+    editorInstance.setOutlinePass([])
+  } else {
+    handler.mode = 'transform'
+    if (selected?.parent) transformControls.attach(selected)
+    editorInstance.setOutlinePass([])
+  }
   if (val === '平移') transformControls.setMode('translate')
   else if (val === '旋转') transformControls.setMode('rotate')
   else if (val === '缩放') transformControls.setMode('scale')
@@ -311,6 +323,8 @@ const openPanel = () => editorInstance?.openControlPanel()
 const emitThreeEditor = (threeEditor) => {
   if (!threeEditor) { projectRecordError.value = '工程尚未载入，已保留已有记录'; return }
   editorInstance = threeEditor
+  threeEditor.handler.selectChildEnabled = true
+  threeEditor.handler.selectChildLevel = 1
   sceneReady.value = true
   hasNanjingEffects.value = !!threeEditor.__nanjingRestoreActive
   rightPanel.value.helperConf(threeEditor)
@@ -561,64 +575,27 @@ const exportGLTF = () => {
 }
 
 
-const doExport = () => {
-
-  const { scene } = threeEditor
-  const exportObjects = []
-
-  // 收集场景直接子级中可导出的物体
-  scene.children.map(child => {
-    // 排除不需要导出的对象
-    if (
-      child.isTransformControls ||
-      child.type === 'TransformControls' ||
-      child.type === 'TransformControlsPlane' ||
-      child.isHelper ||
-      child.type.includes('Helper') ||
-      child.type === 'GridHelper' ||
-      child.type === 'AxesHelper' ||
-      child.type === 'CameraHelper' ||
-      child.type === 'DirectionalLightHelper' ||
-      child.type === 'PointLightHelper' ||
-      child.type === 'SpotLightHelper' ||
-      child.type === 'HemisphereLightHelper' ||
-      !child.visible
-    ) return
-
-    // 包含 Mesh、Group、Object3D 等（排除粒子和灯光）
-    if ((child.isMesh || child.isGroup || child.isObject3D || child.isLine) && !child.isLight && !child.isPoints) {
-        if(child.visible) exportObjects.push(child)
+const doExport = async () => {
+  try {
+    const { data: result, objectCount } = await exportSourceSceneGlb(threeEditor)
+    if (!objectCount) {
+      ElMessage.warning('场景中没有可导出的模型')
+      return
     }
-  })
-
-  if (exportObjects.length === 0) {
-    ElMessage.warning('场景中没有可导出的模型')
-    return
+    const isBuffer = result instanceof ArrayBuffer
+    const blob = new Blob(
+      [isBuffer ? result : JSON.stringify(result, null, 2)],
+      { type: isBuffer ? 'model/gltf-binary' : 'model/gltf+json' }
+    )
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `${dataCores.sceneName}.glb`
+    link.click()
+    URL.revokeObjectURL(link.href)
+    ElMessage.success(`导出成功`)
+  } catch (error) {
+    ElMessage.error('导出失败: ' + error.message)
   }
-
-  // 创建临时场景用于导出
-  const exportScene = new THREE.Scene()
-  exportObjects.forEach(obj => exportScene.add(obj.clone(true)))
-
-  const exporter = new GLTFExporter()
-  exporter.parse(
-    exportScene,
-    (result) => {
-      const isBuffer = result instanceof ArrayBuffer
-      const blob = new Blob(
-        [isBuffer ? result : JSON.stringify(result, null, 2)],
-        { type: isBuffer ? 'model/gltf-binary' : 'model/gltf+json' }
-      )
-      const link = document.createElement('a')
-      link.href = URL.createObjectURL(blob)
-      link.download = `${dataCores.sceneName}.glb`
-      link.click()
-      URL.revokeObjectURL(link.href)
-      ElMessage.success(`导出成功`)
-    },
-    (error) => ElMessage.error('导出失败: ' + error.message),
-    { binary: true, embedImages: true, includeCustomExtensions: true }
-  )
 }
 
 const handleUndo = () => {

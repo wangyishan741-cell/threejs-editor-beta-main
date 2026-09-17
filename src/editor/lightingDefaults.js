@@ -171,7 +171,57 @@ function getContentBox(scene) {
   return hasMesh ? box : null
 }
 
-export function getRealisticLightingSettings() {
+const projectLightingStates = new WeakMap()
+const numericLightingKeys = ['sunIntensity', 'ambientIntensity', 'exposure']
+const booleanLightingKeys = ['skyEnabled', 'shadowFloorEnabled', 'ambientOcclusionEnabled']
+
+function normalizeLighting(settings = {}, base = REALISTIC_LIGHTING_DEFAULTS) {
+  const result = { ...base, version: SETTINGS_VERSION }
+  numericLightingKeys.forEach(key => {
+    if (typeof settings[key] === 'number' && Number.isFinite(settings[key]) && settings[key] >= 0) result[key] = settings[key]
+  })
+  booleanLightingKeys.forEach(key => { if (typeof settings[key] === 'boolean') result[key] = settings[key] })
+  return result
+}
+
+function savedLightingSettings(params = {}) {
+  const saved = params.realisticLighting
+  if (saved) return normalizeLighting(saved)
+  // Older projects already stored the actual renderer and named lights. Do
+  // not replace those values with another project's localStorage preferences.
+  const lights = params.lightCores || []
+  const sun = lights.find(light => light.name === SUN_LIGHT_NAME)
+  const ambient = lights.find(light => light.name === SKY_FILL_NAME)
+  return normalizeLighting({
+    sunIntensity: sun?.intensity,
+    ambientIntensity: ambient?.intensity,
+    exposure: params.webglRenderer?.toneMappingExposure,
+    skyEnabled: params.scene?.backgroundUrls?.length ? false : undefined,
+    ambientOcclusionEnabled: params.effectComposer?.effectPass?.saoPass?.enabled,
+  })
+}
+
+function runtimeLightingSettings(editor, base) {
+  if (editor.__nanjingRestoreActive) {
+    const source = editor.nanjingRestore?.getLightingSettings?.() || {
+      exposure: editor.renderer?.toneMappingExposure,
+      ambientIntensity: editor.scene?.environmentIntensity,
+    }
+    return { ...normalizeLighting(source, base), sunAvailable: source.sunAvailable !== false }
+  }
+  return normalizeLighting({
+    sunIntensity: editor.scene?.getObjectByName?.(SUN_LIGHT_NAME)?.intensity,
+    ambientIntensity: editor.scene?.getObjectByName?.(SKY_FILL_NAME)?.intensity,
+    exposure: editor.renderer?.toneMappingExposure,
+  }, base)
+}
+
+export function getRealisticLightingSettings(editor) {
+  if (editor) {
+    const state = projectLightingStates.get(editor)
+    if (editor.__nanjingRestoreActive) return runtimeLightingSettings(editor, state?.settings || REALISTIC_LIGHTING_DEFAULTS)
+    return { ...(state?.settings || runtimeLightingSettings(editor, REALISTIC_LIGHTING_DEFAULTS)) }
+  }
   let stored = {}
   try {
     stored = JSON.parse(window.localStorage.getItem(REALISTIC_LIGHTING_STORAGE_KEY) || '{}') || {}
@@ -184,15 +234,94 @@ export function getRealisticLightingSettings() {
 }
 
 export function setRealisticLightingSettings(settings, editor) {
-  const next = {
-    ...getRealisticLightingSettings(),
-    ...settings,
+  const saved = getRealisticLightingSettings(editor)
+  const next = normalizeLighting(settings, editor ? runtimeLightingSettings(editor, saved) : saved)
+  if (editor) {
+    const state = projectLightingStates.get(editor)
+    if (editor.__nanjingRestoreActive) editor.nanjingRestore?.setLightingSettings?.(settings)
+    else applyRealisticLightingDefaults(editor, next)
+    if (state) state.settings = next
+    editor.transformControls?.dispatchEvent?.({ type: 'objectChange' })
+    editor.scene?.dispatchEvent?.({ type: 'project-lighting-settings-changed' })
+  } else {
+    try { window.localStorage.setItem(REALISTIC_LIGHTING_STORAGE_KEY, JSON.stringify(next)) } catch (error) {}
   }
-  try {
-    window.localStorage.setItem(REALISTIC_LIGHTING_STORAGE_KEY, JSON.stringify(next))
-  } catch (error) {}
-  if (editor) applyRealisticLightingDefaults(editor, next)
   return next
+}
+
+function applyBackgroundSelection(editor, kind, urls) {
+  const scene = editor.scene
+  if (kind === 'backgroundUrls') {
+    if (urls?.length) scene.setSceneBackground(urls.slice())
+    else { scene.background = null; scene.backgroundUrls = null }
+    const sky = scene.getObjectByName?.(ATMOSPHERE_SKY_NAME)
+    if (sky) sky.visible = false
+  } else {
+    if (urls?.length) scene.setEnvBackground(urls.slice())
+    else { scene.envBackground = null; scene.envBackgroundUrls = null; scene.environment = null }
+    scene.environmentEnabled = !!urls?.length
+  }
+}
+
+export function setProjectLightingBackground(editor, kind, urls) {
+  if (!editor?.scene || !['backgroundUrls', 'environmentUrls'].includes(kind)) return
+  if (urls !== null && (!Array.isArray(urls) || urls.length !== 6 || urls.some(url => typeof url !== 'string' || !url))) throw new Error('天空素材必须包含六张图片')
+  const state = projectLightingStates.get(editor)
+  if (!state) throw new Error('工程光照尚未就绪')
+  state[kind] = urls?.slice() ?? null
+  if (kind === 'backgroundUrls') state.settings.skyEnabled = false
+  applyBackgroundSelection(editor, kind, urls)
+  editor.transformControls?.dispatchEvent?.({ type: 'objectChange' })
+  editor.scene.dispatchEvent?.({ type: 'project-lighting-settings-changed' })
+}
+
+// Nanjing restores its HDR asynchronously. Call this after that restore so an
+// explicit user selection takes precedence without changing the original HDR.
+export function restoreProjectLightingBackgrounds(editor) {
+  const state = projectLightingStates.get(editor)
+  if (!state || state.destroyed) return
+  for (const kind of ['backgroundUrls', 'environmentUrls']) {
+    if (Object.hasOwn(state, kind)) applyBackgroundSelection(editor, kind, state[kind])
+  }
+}
+
+export function installProjectLightingSettings(editor, initialParams = {}) {
+  if (projectLightingStates.has(editor)) return
+  const state = { settings: savedLightingSettings(initialParams), generation: 0, destroyed: false }
+  const load = params => {
+    state.generation++
+    state.settings = savedLightingSettings(params)
+    for (const kind of ['backgroundUrls', 'environmentUrls']) {
+      delete state[kind]
+      const value = params?.realisticLighting?.[kind]
+      if (value === null || (Array.isArray(value) && value.length === 6 && value.every(url => typeof url === 'string' && url))) state[kind] = value?.slice() ?? null
+    }
+  }
+  load(initialParams)
+  projectLightingStates.set(editor, state)
+  const save = editor.saveSceneEdit.bind(editor)
+  editor.saveSceneEdit = (...args) => {
+    const data = save(...args)
+    const settings = runtimeLightingSettings(editor, state.settings)
+    data.realisticLighting = { ...settings }
+    for (const kind of ['backgroundUrls', 'environmentUrls']) if (Object.hasOwn(state, kind)) data.realisticLighting[kind] = state[kind]?.slice() ?? null
+    return data
+  }
+  const reset = editor.resetEditorStorage.bind(editor)
+  editor.resetEditorStorage = (params, ...args) => {
+    load(params || {})
+    const result = reset(params, ...args)
+    restoreProjectLightingBackgrounds(editor)
+    editor.scene?.dispatchEvent?.({ type: 'project-lighting-settings-changed' })
+    return result
+  }
+  const destroy = editor.destroySceneRender?.bind(editor)
+  if (destroy) editor.destroySceneRender = (...args) => {
+    state.destroyed = true; state.generation++
+    projectLightingStates.delete(editor)
+    return destroy(...args)
+  }
+  restoreProjectLightingBackgrounds(editor)
 }
 
 function ensureAtmosphereSky(scene, target, sunDirection, span, enabled) {
@@ -394,7 +523,7 @@ export function applyRealisticLightingDefaults(editor, overrideSettings = {}) {
   if (editor.__nanjingRestoreActive) return
 
   const settings = {
-    ...getRealisticLightingSettings(),
+    ...getRealisticLightingSettings(editor),
     ...overrideSettings,
   }
   const { scene, renderer } = editor
@@ -486,9 +615,14 @@ export function applyRealisticLightingDefaults(editor, overrideSettings = {}) {
 
 export function scheduleRealisticLightingRefresh(editor) {
   if (!editor) return
-  applyRealisticLightingDefaults(editor)
-  requestAnimationFrame(() => applyRealisticLightingDefaults(editor))
+  const state = projectLightingStates.get(editor), generation = state?.generation
+  const refresh = () => {
+    if (state && (state.destroyed || state.generation !== generation)) return
+    applyRealisticLightingDefaults(editor)
+  }
+  refresh()
+  requestAnimationFrame(refresh)
   ;[300, 1000, 2500].forEach(delay => {
-    window.setTimeout(() => applyRealisticLightingDefaults(editor), delay)
+    window.setTimeout(refresh, delay)
   })
 }

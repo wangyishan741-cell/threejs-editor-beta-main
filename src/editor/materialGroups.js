@@ -45,7 +45,9 @@ export function collectMaterialGroups(scene, selectedObject = null) {
     const variant = names.get(name) > 1 ? ` · ${record.material.type} ${ordinal}` : ''
     record.label = `${name}${variant}（${record.meshCount} 个模型）`
   }
-  return records.sort((a, b) => Number(b.selected) - Number(a.selected))
+  // Selection marks the resource; it must not change its stable source order.
+  // The material panel sorts a display copy without touching saved slot indices.
+  return records
 }
 
 function refreshMaterialRoots(meshes) {

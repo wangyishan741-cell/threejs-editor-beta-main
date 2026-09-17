@@ -1,6 +1,8 @@
 import * as THREE from 'three'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import { collectMaterialGroups, replaceMaterialGroup } from './materialGroups.js'
+import { sortMaterialDisplay } from './materialDisplayOrder.js'
+import { appendBaseColorTextureControls, MATERIAL_TEXTURE_STYLES } from './materialTextureControls.js'
 
 const INSTALL_KEY = '__realisticMaterialPanelInstalled'
 const BUTTON_KEY = '__realisticMaterialPanelButton'
@@ -184,7 +186,7 @@ function getSelectedObject(editor) {
 }
 
 function collectMaterialRecords(editor) {
-    return collectMaterialGroups(editor?.scene, getSelectedObject(editor))
+    return sortMaterialDisplay(collectMaterialGroups(editor?.scene, getSelectedObject(editor)))
 }
 
 function ensureStyle() {
@@ -300,6 +302,7 @@ function ensureStyle() {
             #${PANEL_ID} { right: 12px; }
         }
     `
+    style.textContent += MATERIAL_TEXTURE_STYLES
     document.head.appendChild(style)
 }
 
@@ -436,12 +439,12 @@ function setMaterialNumber(editor, material, key, value) {
     markDirty(editor, material)
 }
 
-function renderPanel(editor, selectedIndex = 0) {
+function renderPanel(editor, selectedMaterial = null) {
     ensureStyle()
 
     document.getElementById(PANEL_ID)?.remove()
 
-    const records = collectMaterialRecords(editor)
+    let records = collectMaterialRecords(editor)
     const panel = document.createElement('div')
     panel.id = PANEL_ID
 
@@ -471,23 +474,47 @@ function renderPanel(editor, selectedIndex = 0) {
         return
     }
 
-    const safeIndex = Math.min(Math.max(selectedIndex, 0), records.length - 1)
-    const record = records[safeIndex]
+    // Keep the editing target by resource identity when names or sort positions
+    // change. A selected object's materials stay in their alphabetical places.
+    const record = records.find((item) => item.material === selectedMaterial)
+        || records.find((item) => item.selected)
+        || records[0]
     let material = record.material
     const params = getParams(material)
 
     const select = document.createElement('select')
     select.className = 'material-target'
     select.setAttribute('aria-label', '场景材质')
-    records.forEach((item, index) => {
-        const option = document.createElement('option')
-        option.value = String(index)
-        option.textContent = item.selected ? `选中: ${item.label}` : item.label
-        option.title = `${item.material.type} · ${item.usages.length} 个材质槽共享此材质`
-        select.appendChild(option)
+    select.title = '按材质名称排序（中文拼音 / A–Z，数字自然顺序）'
+    let optionsSignature = ''
+    const refreshOptions = () => {
+        records = collectMaterialRecords(editor)
+        // Re-read after external renames, imports or removals. If this resource
+        // was removed, rebuild its controls too so the selector cannot disagree.
+        if (!records.some((item) => item.material === record.material)) {
+            renderPanel(editor)
+            return
+        }
+        const signature = JSON.stringify(records.map((item) => [item.material.uuid, item.label, item.selected]))
+        if (signature === optionsSignature) return
+        optionsSignature = signature
+        select.replaceChildren()
+        records.forEach((item) => {
+            const option = document.createElement('option')
+            option.value = item.material.uuid
+            option.textContent = item.selected ? `选中: ${item.label}` : item.label
+            option.title = `${item.material.type} · ${item.usages.length} 个材质槽共享此材质`
+            select.appendChild(option)
+        })
+        select.value = record.material.uuid
+    }
+    refreshOptions()
+    select.addEventListener('focus', refreshOptions)
+    select.addEventListener('pointerdown', refreshOptions)
+    select.addEventListener('change', () => {
+        const nextRecord = records.find((item) => item.material.uuid === select.value)
+        if (nextRecord) renderPanel(editor, nextRecord.material)
     })
-    select.value = String(safeIndex)
-    select.addEventListener('change', () => renderPanel(editor, Number(select.value)))
     body.appendChild(select)
 
     const note = document.createElement('p')
@@ -501,11 +528,21 @@ function renderPanel(editor, selectedIndex = 0) {
     upgradeButton.textContent = material.isMeshPhysicalMaterial ? '已是物理材质' : '转换为物理材质'
     upgradeButton.addEventListener('click', () => {
         material = upgradeRecord(editor, record)
-        renderPanel(editor, safeIndex)
+        renderPanel(editor, material)
     })
     body.appendChild(upgradeButton)
 
     appendColor(body, '基础色', params.color, (value) => setMaterialColor(editor, record.material, 'color', value))
+    appendBaseColorTextureControls(body, { editor, record, markDirty,
+        onApplied: () => {
+            // Rebuild if a display controller replaces its material after the edit.
+            setTimeout(() => {
+                if (!panel.isConnected) return
+                const current = Array.isArray(record.mesh.material) ? record.mesh.material[record.slot] : record.mesh.material
+                if (current !== record.material) renderPanel(editor, current)
+            }, 300)
+        },
+    })
     appendNumber(body, '金属度', params.metalness, 0, 1, 0.001, (value) => setMetalness(editor, record, value))
     appendNumber(body, '糙度', params.roughness, 0, 1, 0.001, (value) => setMaterialNumber(editor, materialForProperty(editor, record, 'roughness'), 'roughness', value))
     appendNumber(body, '折射率(IOR)', params.ior, 1, 2.333, 0.001, (value) => setMaterialNumber(editor, upgradeRecord(editor, record), 'ior', value))
@@ -568,9 +605,9 @@ function renderPanel(editor, selectedIndex = 0) {
     makeDraggable(panel, title)
 }
 
-function safeRenderPanel(editor, selectedIndex = 0) {
+function safeRenderPanel(editor, selectedMaterial = null) {
     try {
-        renderPanel(editor, selectedIndex)
+        renderPanel(editor, selectedMaterial)
     } catch (error) {
         console.warn('[material-panel] open skipped:', error)
     }

@@ -1,0 +1,23 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>基础色贴图验证</title>
+<style>body{margin:0;background:#182330;color:#dfebf6;font:14px system-ui;padding:20px}button{padding:8px 16px;margin:5px}#report{white-space:pre-wrap;max-width:650px}canvas{display:block}#realistic-material-panel{right:20px!important;top:18px!important;max-height:calc(100vh - 36px)!important}</style>
+<h2>基础色贴图 · 编辑器功能验证</h2><p>左侧模型是编辑目标，右侧模型共用原图片但使用独立材质。</p><nav id="actions"></nav><div id="render"></div><pre id="report"></pre>
+<script type="module">
+import * as T from '/node_modules/three/build/three.module.js'
+import { installMaterialPanel } from '/src/editor/materialPanel.js'
+import { captureNanjingProjectSnapshot, restoreNanjingProjectSnapshot } from '/src/editor/nanjingProjectSnapshot.js'
+const scene=new T.Scene(),root=new T.Group();root.editorType='isModelGroup';root.modelInfo={type:'GLTF'};root.name='测试集合';scene.add(root)
+scene.environment=new T.Texture()
+function pattern(name,a,b){const canvas=document.createElement('canvas');canvas.width=canvas.height=128;const c=canvas.getContext('2d');c.fillStyle=a;c.fillRect(0,0,128,128);c.fillStyle=b;c.fillRect(0,0,64,64);c.fillRect(64,64,64,64);const tex=new T.Texture(canvas);tex.name=name;tex.textureUrl=canvas.toDataURL('image/png');tex.textureType='image';tex.flipY=false;tex.colorSpace=T.SRGBColorSpace;tex.needsUpdate=true;return tex}
+const a=pattern('A_灰砖','#d1d4d6','#66727d'),b=pattern('B_暖色砖','#d8a066','#734d39')
+const mat=new T.MeshBasicMaterial({name:'A_测试基础色',map:a}),other=new T.MeshBasicMaterial({name:'B_独立材质',map:a})
+const mesh=new T.Mesh(new T.PlaneGeometry(2,2),mat),mesh2=new T.Mesh(mesh.geometry,other);mesh.position.x=-1.3;mesh2.position.x=1.3
+const catalog=new T.Mesh(mesh.geometry,new T.MeshBasicMaterial({name:'C_工程贴图来源',map:b}));catalog.visible=false;root.add(mesh,mesh2,catalog);root.RootMaterials=[mat,other,catalog.material]
+const renderer=new T.WebGLRenderer({antialias:true});renderer.setSize(640,310);renderer.setClearColor(0x283747);document.querySelector('#render').append(renderer.domElement)
+const camera=new T.PerspectiveCamera(42,640/310,.1,100);camera.position.z=6
+let restored=false
+function render(){renderer.render(scene,camera);document.querySelector('#report').textContent=JSON.stringify({selectedMap:mat.map?.name,otherMap:other.map?.name,otherOriginal:other.map===a,independentTexture:mat.map!==a,flipY:mat.map?.flipY,durableUrl:mat.map?.textureUrl?.startsWith('data:image/'),restored},null,2)}
+const editor={scene,renderer,renderScene:render,transformControls:{object:mesh},GUI:{children:[{_title:'场景',addFn(fn){const btn=document.createElement('button');document.querySelector('#actions').append(btn);btn.onclick=fn;return{name(n){btn.textContent=n}}}}]},openControlPanel(){}}
+installMaterialPanel(editor);editor.openControlPanel()
+const save=document.createElement('button');save.textContent='保存并重开检查';save.onclick=async()=>{const snap=JSON.parse(JSON.stringify(captureNanjingProjectSnapshot(editor)));mat.map=a;await restoreNanjingProjectSnapshot(editor,snap);restored=true;render()};document.querySelector('#actions').append(save)
+render()
+</script></html>

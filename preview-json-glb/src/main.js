@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { createPreviewWaterSurface } from '../../src/editor/previewWaterSurface.js';
 import './styles.css';
 
 const canvas = document.querySelector('#previewCanvas');
@@ -29,6 +30,7 @@ controls.target.set(0, 0, 0);
 const root = new THREE.Group();
 root.name = 'PreviewRoot';
 scene.add(root);
+const previewWater = createPreviewWaterSurface(root);
 
 const grid = new THREE.GridHelper(40, 40, 0x3c5966, 0x1d3038);
 grid.name = 'PreviewGrid';
@@ -107,6 +109,7 @@ async function loadJsonFile(file) {
 
 async function applyEditorJson(config, meta = {}) {
   clearPreview({ withDefaultLights: false });
+  previewWater.setJsonConfig(config);
   applyRendererConfig(config.webglRenderer);
   applyCameraConfig(config.perspectiveCamera);
   applyOrbitConfig(config.orbitControls);
@@ -145,6 +148,7 @@ async function applyEditorJson(config, meta = {}) {
       const model = await loadModel(modelUrl, { source: 'json', addToRoot: false });
       applyTransform(model, item.group || item);
       root.add(model);
+      previewWater.addModel(model);
       stats.models += 1;
     } catch (error) {
       stats.modelUrls.push(`失败: ${modelUrl} - ${error.message}`);
@@ -153,6 +157,7 @@ async function applyEditorJson(config, meta = {}) {
 
   if (!stats.lights) addDefaultLights();
   if (!stats.meshes && !stats.models) addEmptyMarker();
+  previewWater.refresh();
   frameObject(root, config);
 
   setStatus([
@@ -160,6 +165,7 @@ async function applyEditorJson(config, meta = {}) {
     `灯光: ${stats.lights}`,
     `基础网格: ${stats.meshes}`,
     `GLB/GLTF: ${stats.models}`,
+    ...(previewWater.getStatus().active ? [`水面细波纹: 已恢复 ${previewWater.getStatus().materials} 个材质`] : []),
     stats.modelUrls.length ? `模型地址:\n${stats.modelUrls.map(url => `- ${url}`).join('\n')}` : '未在 JSON 中发现 GLB/GLTF 引用',
     '',
     '提示: geoCores、particleCores、designCores 等编辑器专有组件不会完整复刻；这里主要验证 JSON + GLB 文件组合。'
@@ -168,6 +174,7 @@ async function applyEditorJson(config, meta = {}) {
 
 function clearPreview(options = {}) {
   const { withDefaultLights = true } = options;
+  previewWater.clear();
   mixers.length = 0;
   while (root.children.length) {
     const child = root.children.pop();
@@ -365,8 +372,10 @@ async function loadModel(url, options = {}) {
 
   if (options.addToRoot !== false) {
     root.add(model);
+    previewWater.addModel(model);
     frameObject(model);
-    setStatus(`已加载模型:\n${url}\n动画数量: ${gltf.animations?.length || 0}`);
+    const waterStatus = previewWater.getStatus();
+    setStatus(`已加载模型:\n${url}\n动画数量: ${gltf.animations?.length || 0}${waterStatus.active ? `\n水面细波纹: 已恢复 ${waterStatus.materials} 个材质` : ''}`);
   }
   return model;
 }

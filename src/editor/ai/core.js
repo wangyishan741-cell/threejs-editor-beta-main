@@ -1,7 +1,7 @@
 import { tool } from 'ai'
 import { z } from 'zod/v4'
 import * as THREE from 'three'
-import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
+import { exportSourceSceneGlb } from '../sourceSceneExport.js'
 import { FontLoader } from 'three/examples/jsm/loaders/FontLoader.js'
 import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
 import { Line2 } from 'three/examples/jsm/lines/Line2.js'
@@ -3561,39 +3561,23 @@ function exportSceneJson(editor, { download = true, sceneName } = {}) {
   return { exported: name, keys: Object.keys(data), downloaded: download }
 }
 
-function exportSceneGlb(editor, { sceneName } = {}) {
-  const exportObjects = []
-  editor.scene.children.forEach(child => {
-    if (
-      child.isTransformControls || child.type === 'TransformControls' || child.type === 'TransformControlsPlane'
-      || child.isHelper || child.type.includes('Helper') || !child.visible
-    ) return
-    if ((child.isMesh || child.isGroup || child.isObject3D || child.isLine) && !child.isLight && !child.isPoints) {
-      exportObjects.push(child)
-    }
-  })
-  if (!exportObjects.length) return { error: '场景中没有可导出的模型' }
-  const exportScene = new THREE.Scene()
-  exportObjects.forEach(obj => exportScene.add(obj.clone(true)))
+async function exportSceneGlb(editor, { sceneName } = {}) {
   const name = sceneName || localStorage.getItem('new_sceneName') || '场景'
-  return new Promise(resolve => {
-    new GLTFExporter().parse(
-      exportScene,
-      result => {
-        const blob = new Blob([result instanceof ArrayBuffer ? result : JSON.stringify(result)], {
-          type: result instanceof ArrayBuffer ? 'model/gltf-binary' : 'model/gltf+json',
-        })
-        const link = document.createElement('a')
-        link.href = URL.createObjectURL(blob)
-        link.download = `${name}.glb`
-        link.click()
-        URL.revokeObjectURL(link.href)
-        resolve({ exported: `${name}.glb`, objectCount: exportObjects.length })
-      },
-      err => resolve({ error: `GLB 导出失败: ${err?.message || String(err)}` }),
-      { binary: true, embedImages: true },
-    )
-  })
+  try {
+    const { data: result, objectCount } = await exportSourceSceneGlb(editor)
+    if (!objectCount) return { error: '场景中没有可导出的模型' }
+    const blob = new Blob([result instanceof ArrayBuffer ? result : JSON.stringify(result)], {
+      type: result instanceof ArrayBuffer ? 'model/gltf-binary' : 'model/gltf+json',
+    })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `${name}.glb`
+    link.click()
+    URL.revokeObjectURL(link.href)
+    return { exported: `${name}.glb`, objectCount }
+  } catch (error) {
+    return { error: `GLB 导出失败: ${error?.message || String(error)}` }
+  }
 }
 
 function captureScreenshot(editor, { download = true, quality = 0.8 } = {}) {

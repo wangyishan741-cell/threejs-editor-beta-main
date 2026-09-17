@@ -17,7 +17,7 @@ const ignored = object => object.userData?.nanjingUtility || object.userData?.sk
 
 function textureDescriptor(texture) {
   if (!texture?.isTexture) return null
-  return { ...(texture.textureUrl ? { url: texture.textureUrl } : {}),
+  return { name: texture.name, ...(texture.textureUrl ? { url: texture.textureUrl } : {}),
     ...Object.fromEntries(TEXTURE_VALUES.map(key => [key, texture[key]])),
     repeat: texture.repeat.toArray(), offset: texture.offset.toArray(), center: texture.center.toArray(), matrix: texture.matrix.toArray() }
 }
@@ -105,6 +105,7 @@ export async function restoreNanjingProjectSnapshot(editor, snapshot, { isCurren
       texture.source = images.get(descriptor.url).source
       texture.textureUrl = descriptor.url; texture.textureType = 'image'
     }
+    if (typeof descriptor.name === 'string') texture.name = descriptor.name
     for (const property of TEXTURE_VALUES) if (descriptor[property] !== undefined) texture[property] = descriptor[property]
     for (const property of ['repeat', 'offset', 'center', 'matrix']) if (descriptor[property]) texture[property].fromArray(descriptor[property])
     texture.needsUpdate = true

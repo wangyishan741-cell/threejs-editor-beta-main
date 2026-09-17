@@ -3,34 +3,40 @@
         <section class="inspector-section scene-section" :class="{ 'is-open': expandedSections.scene }">
             <button type="button" class="section-heading" :aria-expanded="expandedSections.scene"
                 aria-controls="inspector-scene-tree" @click="expandedSections.scene = !expandedSections.scene">
-                <span>场景树 <span class="section-count">{{ sceneObjList.length }}</span></span>
+                <span>场景集合 <span class="section-count">{{ rootCount }}</span></span>
                 <el-icon class="section-chevron" :class="{ 'is-open': expandedSections.scene }" aria-hidden="true"><ArrowRightBold /></el-icon>
             </button>
             <div id="inspector-scene-tree" v-show="expandedSections.scene" class="scene-content">
-                <p class="section-hint">单击选择 · 双击名称重命名</p>
-                <ul v-if="sceneObjList.length" class="scene-tree" aria-label="场景对象">
-                    <li v-for="value in sceneObjList" :key="value.id" class="tree-item">
-                        <button type="button" class="icon-button visibility-button" :aria-label="(value.visible ? '隐藏 ' : '显示 ') + (value.name || value.type)"
-                            :title="value.visible ? '隐藏对象' : '显示对象'" :aria-pressed="!!value.visible" @click="value.visible = !value.visible">
+                <p class="section-hint">展开集合选择模型 · 可单独移动 · 集合内删除可撤销</p>
+                <input v-model="treeQuery" class="tree-search" type="search" aria-label="查找集合或模型" placeholder="查找集合或模型" @keydown.stop />
+                <ul v-if="treeRows.length" ref="treeElement" class="scene-tree" role="tree" aria-label="场景对象" @scroll="treeScroll = $event.target.scrollTop">
+                    <li v-if="treeStart" role="presentation" aria-hidden="true" :style="{ height: `${treeStart * ROW_HEIGHT}px` }"></li>
+                    <li v-for="value in virtualTreeRows" :key="value.id" class="tree-item" :class="{ 'is-selected': selectedId === value.id }"
+                        role="treeitem" :aria-level="value.depth + 1" :aria-expanded="value.hasChildren ? value.expanded : undefined" :aria-selected="selectedId === value.id"
+                        :style="{ paddingLeft: `${3 + Math.min(value.depth, 12) * 12}px` }">
+                        <button v-if="value.hasChildren" type="button" class="tree-disclosure" :aria-label="(value.expanded ? '折叠集合 ' : '展开集合 ') + value.name"
+                            :aria-expanded="value.expanded" @click="toggleCollection(value)">{{ value.expanded ? '▾' : '▸' }}</button>
+                        <span v-else class="tree-disclosure empty" aria-hidden="true">·</span>
+                        <button type="button" class="icon-button visibility-button" :aria-label="(value.visible ? '隐藏 ' : '显示 ') + value.name"
+                            :title="value.visible ? '隐藏对象' : '显示对象'" :aria-pressed="!!value.visible" @click="toggleObjectVisibility(value.object)">
                             <el-icon aria-hidden="true"><View v-if="value.visible" /><Hide v-else /></el-icon>
                         </button>
-                        <el-input v-if="editingId === value.id" v-model="value.name" class="rename-input" size="small" autofocus
-                            aria-label="对象名称" @blur="editingId = null" @keyup.enter="editingId = null" />
-                        <button v-else type="button" class="object-name" :class="{ 'is-hidden': !value.visible }"
-                            :title="value.name || value.type" :aria-label="'选择 ' + (value.name || value.type)"
-                            @click="selectObj(value)" @dblclick="editingId = value.id" @keydown.f2.prevent="editingId = value.id">
-                            {{ value.name || value.type }}
+                        <input v-if="editingId === value.id" v-model="renameValue" class="rename-input" autofocus
+                            aria-label="对象名称" @blur="commitRename(value.object)" @keydown.stop @keyup.enter="commitRename(value.object)" @keyup.esc="editingId = null" />
+                        <button v-else type="button" class="object-name" :class="{ 'is-hidden': !value.effectiveVisible }"
+                            :title="value.name + (value.hasChildren ? ` · ${value.childCount} 个子级` : '')" :aria-label="'选择 ' + value.name"
+                            @click="selectObj(value.object)" @dblclick="beginRename(value)" @keydown.f2.prevent="beginRename(value)"
+                            @keydown.right.prevent="expandCollection(value)" @keydown.left.prevent="collapseCollection(value)"
+                            @keydown.delete.prevent.stop="delI(value.object)">
+                            <span class="object-kind">{{ value.kind === '集合' ? '▣' : '◇' }}</span>{{ value.name }}
                         </button>
-                        <el-popconfirm title="确定删除？" @confirm="delI(value)">
-                            <template #reference>
-                                <button type="button" class="icon-button delete-button" :aria-label="'删除 ' + (value.name || value.type)" title="删除对象">
-                                    <el-icon aria-hidden="true"><Delete /></el-icon>
-                                </button>
-                            </template>
-                        </el-popconfirm>
+                        <button type="button" class="icon-button delete-button" :aria-label="'删除 ' + value.name" :title="lightingEditor?.modelCollectionEdits?.getRoot(value.object) ? '删除对象（可撤销）' : '删除对象'" @click="delI(value.object)">
+                            <el-icon aria-hidden="true"><Delete /></el-icon>
+                        </button>
                     </li>
+                    <li v-if="treeEnd < treeRows.length" role="presentation" aria-hidden="true" :style="{ height: `${(treeRows.length - treeEnd) * ROW_HEIGHT}px` }"></li>
                 </ul>
-                <p v-else class="empty-message">场景中还没有可编辑对象</p>
+                <p v-else class="empty-message">{{ treeQuery ? '没有匹配的集合或模型' : '场景中还没有可编辑对象' }}</p>
                 <dl class="scene-stats" aria-label="场景统计">
                     <div><dt>物体</dt><dd>{{ sceneStats.objects.toLocaleString() }}</dd></div>
                     <div><dt>顶点</dt><dd>{{ sceneStats.vertices.toLocaleString() }}</dd></div>
@@ -57,27 +63,27 @@
                     <div v-if="expandedSections.environment && getUrl" class="resource" aria-label="环境素材六面预览">
                         <el-image v-for="k in 6" :key="k" class="resource-image" :src="getUrl + k + '.png'" fit="cover" :alt="'环境预览 ' + k" />
                     </div>
-                    <p v-if="nanjingScene" class="section-hint source-lighting-note">沿用 Blender 场景光照；灯光与曝光可在控制板编辑。</p>
-                    <div v-else class="lighting-controls">
+                    <p v-if="nanjingScene" class="section-hint source-lighting-note">沿用工程的 HDR 与原有灯光，调整强度和曝光后随工程保存。</p>
+                    <div class="lighting-controls">
                         <div class="lighting-control">
                             <div class="field-row"><span>日光强度</span><output>{{ lightingSettings.sunIntensity.toFixed(2) }}</output></div>
-                            <el-slider v-model="lightingSettings.sunIntensity" :min="0" :max="3" :step="0.05" aria-label="日光强度" />
+                            <el-slider v-model="lightingSettings.sunIntensity" :disabled="lightingSettings.sunAvailable === false" :min="0" :max="Math.max(nanjingScene ? 30 : 3, Math.ceil(lightingSettings.sunIntensity))" :step="0.05" aria-label="日光强度" @input="saveLightingField('sunIntensity')" />
                         </div>
                         <div class="lighting-control">
                             <div class="field-row"><span>环境补光</span><output>{{ lightingSettings.ambientIntensity.toFixed(2) }}</output></div>
-                            <el-slider v-model="lightingSettings.ambientIntensity" :min="0" :max="5" :step="0.01" aria-label="环境补光" />
+                            <el-slider v-model="lightingSettings.ambientIntensity" :min="0" :max="Math.max(5, Math.ceil(lightingSettings.ambientIntensity))" :step="0.01" aria-label="环境补光" @input="saveLightingField('ambientIntensity')" />
                         </div>
                         <div class="lighting-control">
                             <div class="field-row"><span>曝光</span><output>{{ lightingSettings.exposure.toFixed(2) }}</output></div>
-                            <el-slider v-model="lightingSettings.exposure" :min="0.2" :max="1.6" :step="0.02" aria-label="曝光" />
+                            <el-slider v-model="lightingSettings.exposure" :min="nanjingScene ? 0.02 : 0" :max="Math.max(2, Math.ceil(lightingSettings.exposure))" :step="0.02" aria-label="曝光" @input="saveLightingField('exposure')" />
                         </div>
-                        <div class="control-options">
-                            <el-checkbox v-model="lightingSettings.skyEnabled">天空大气</el-checkbox>
-                            <el-checkbox v-model="lightingSettings.shadowFloorEnabled">栅格地面</el-checkbox>
-                            <el-checkbox v-model="lightingSettings.ambientOcclusionEnabled">环境遮蔽</el-checkbox>
+                        <div v-if="!nanjingScene" class="control-options">
+                            <el-checkbox v-model="lightingSettings.skyEnabled" @change="saveLightingField('skyEnabled')">天空大气</el-checkbox>
+                            <el-checkbox v-model="lightingSettings.shadowFloorEnabled" @change="saveLightingField('shadowFloorEnabled')">栅格地面</el-checkbox>
+                            <el-checkbox v-model="lightingSettings.ambientOcclusionEnabled" @change="saveLightingField('ambientOcclusionEnabled')">环境遮蔽</el-checkbox>
                         </div>
                         <div class="two-actions">
-                            <el-button size="small" @click="resetLightingSettings">重置光照</el-button>
+                            <el-button v-if="!nanjingScene" size="small" @click="resetLightingSettings">重置光照</el-button>
                             <el-button size="small" type="primary" plain @click="refreshLighting">刷新光照</el-button>
                         </div>
                     </div>
@@ -155,50 +161,108 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, shallowReactive, watch, onUnmounted } from 'vue'
+import { computed, reactive, ref, shallowRef, watch, onUnmounted, nextTick } from 'vue'
 import { View, Hide, Delete, ArrowRightBold, BrushFilled, VideoPlay } from '@element-plus/icons-vue'
 import { ElMessageBox, ElMessage } from 'element-plus'
-import { NANJING_SCENE_NAME } from './nanjingRestore'
+import { sceneHierarchyRows, sceneHierarchyChildren, observeSceneHierarchy } from './sceneHierarchy.js'
 import {
     REALISTIC_LIGHTING_DEFAULTS,
     getRealisticLightingSettings,
     setRealisticLightingSettings,
     scheduleRealisticLightingRefresh,
+    setProjectLightingBackground,
 } from './lightingDefaults'
 
-const sceneObjList = reactive([])
+const treeRows = shallowRef([])
+const rootCount = ref(0)
+const treeQuery = ref('')
+const treeElement = ref(null)
+const treeScroll = ref(0)
+const expandedCollections = new Set()
+const selectedId = ref(null)
+const renameValue = ref('')
+const ROW_HEIGHT = 32
+const treeStart = computed(() => Math.max(0, Math.min(Math.floor(treeScroll.value / ROW_HEIGHT) - 8, treeRows.value.length - 48)))
+const treeEnd = computed(() => Math.min(treeRows.value.length, treeStart.value + 48))
+const virtualTreeRows = computed(() => treeRows.value.slice(treeStart.value, treeEnd.value))
+let stopTreeObserver = null, treeTimer = null, lastSelectionId = null
 const props = defineProps({ sceneName: String })
-const nanjingScene = computed(() => props.sceneName === NANJING_SCENE_NAME)
+const nanjingScene = ref(false)
 const editingId = ref(null)
 const expandedSections = reactive({ scene: true, environment: false, display: false, animation: false, resources: false })
 const sceneStats = reactive({ vertices: 0, edges: 0, triangles: 0, objects: 0 })
-const lightingSettings = reactive(getRealisticLightingSettings())
+const lightingSettings = reactive({ ...REALISTIC_LIGHTING_DEFAULTS })
 let lightingEditor = null
 
-function shouldShowSceneObject(obj) {
-    if (!obj || obj.userData?.skipEditorTree) return false
-    return ['PerspectiveCamera','AxesHelper','GridHelper','Box3Helper'].indexOf(obj.type) === -1
+function refreshSceneTree() {
+    if (!lightingEditor?.scene) return
+    rootCount.value = sceneHierarchyChildren(lightingEditor.scene).length
+    treeRows.value = sceneHierarchyRows(lightingEditor.scene, expandedCollections, treeQuery.value)
+}
+function toggleCollection(row) {
+    if (expandedCollections.has(row.id)) expandedCollections.delete(row.id)
+    else expandedCollections.add(row.id)
+    refreshSceneTree()
+}
+function expandCollection(row) { if (row.hasChildren) { expandedCollections.add(row.id); refreshSceneTree() } }
+function collapseCollection(row) { expandedCollections.delete(row.hasChildren ? row.id : row.parentId); refreshSceneTree() }
+watch(treeQuery, () => {
+    treeScroll.value = 0
+    if (treeElement.value) treeElement.value.scrollTop = 0
+    refreshSceneTree()
+})
+function beginRename(row) {
+    editingId.value = row.id; renameValue.value = row.object.name
+    nextTick(() => treeElement.value?.querySelector('.rename-input')?.focus())
+}
+function commitRename(object) {
+    if (editingId.value !== object.uuid) return
+    const name = renameValue.value.trim()
+    if (name && name !== object.name) {
+        if (!lightingEditor?.modelCollectionEdits?.rename(object, name)) object.name = name
+    }
+    editingId.value = null; refreshSceneTree()
+}
+function toggleObjectVisibility(object) {
+    if (!lightingEditor?.modelCollectionEdits?.setVisible(object, !object.visible)) {
+        object.visible = !object.visible
+        lightingEditor?.transformControls?.dispatchEvent({ type: 'objectChange' })
+    }
+    refreshSceneTree()
 }
 
-function saveLightingSettings() {
-    setRealisticLightingSettings({ ...lightingSettings }, lightingEditor || window.threeEditor)
+function syncLightingSettings() {
+    if (!lightingEditor) return
+    nanjingScene.value = !!lightingEditor.__nanjingRestoreActive
+    Object.assign(lightingSettings, { sunAvailable: true }, getRealisticLightingSettings(lightingEditor))
+}
+
+function saveLightingField(key) {
+    if (!lightingEditor) return
+    try {
+        setRealisticLightingSettings({ [key]: lightingSettings[key] }, lightingEditor)
+    } catch (error) {
+        syncLightingSettings()
+        ElMessage.error(error?.message || '光照调整失败，已保留原参数')
+    }
 }
 
 function resetLightingSettings() {
     Object.assign(lightingSettings, REALISTIC_LIGHTING_DEFAULTS)
-    saveLightingSettings()
+    if (lightingEditor) setRealisticLightingSettings({ ...lightingSettings }, lightingEditor)
 }
 
 function refreshLighting() {
-    scheduleRealisticLightingRefresh(lightingEditor || window.threeEditor)
+    scheduleRealisticLightingRefresh(lightingEditor)
+    syncLightingSettings()
     ElMessage.success('光照已刷新')
 }
 
-watch(lightingSettings, saveLightingSettings, { deep: true })
+watch(() => props.sceneName, () => nextTick(syncLightingSettings))
 
 function updateSceneStats() {
   let vertices = 0, triangles = 0, objects = 0
-  const scene = window.threeEditor?.scene
+  const scene = lightingEditor?.scene || window.threeEditor?.scene
   if (!scene) return
   scene.traverse(obj => {
     if (obj.userData?.nanjingUtility) return
@@ -217,6 +281,7 @@ function updateSceneStats() {
   sceneStats.objects = objects
 }
 window.updateSceneStats = updateSceneStats
+onUnmounted(() => { stopTreeObserver?.(); clearInterval(treeTimer); lightingEditor?.scene?.removeEventListener('project-lighting-settings-changed', syncLightingSettings) })
 
 const selectedSet = ref('蓝天')
 const datalist = reactive([
@@ -270,15 +335,14 @@ const clearAnimation = () => {
 
 const setSky = (v) => {
     const set = datalist.find(i => i.name === v)
-    if (!set.url) return threeEditor.scene.background = null
-    threeEditor.scene.setSceneBackground(Array.from({ length: 6 }, (_, i) => `${set.url || ''}${i + 1}.png`))
+    if (!set || !lightingEditor) return
+    setProjectLightingBackground(lightingEditor, 'backgroundUrls', set.url ? Array.from({ length: 6 }, (_, i) => `${set.url}${i + 1}.png`) : null)
 }
 
 const setEnv = (v) => {
     const set = datalist.find(i => i.name === v)
-    if (!set.url) return threeEditor.scene.envBackground = null
-    threeEditor.scene.setEnvBackground(Array.from({ length: 6 }, (_, i) => `${set.url || ''}${i + 1}.png`))
-    threeEditor.scene.environmentEnabled = true
+    if (!set || !lightingEditor) return
+    setProjectLightingBackground(lightingEditor, 'environmentUrls', set.url ? Array.from({ length: 6 }, (_, i) => `${set.url}${i + 1}.png`) : null)
 };
 
 // 网格和坐标轴控制
@@ -343,49 +407,45 @@ defineExpose({
         showAxes.value = tr.handler.helpers.axes.showAxes
     },
     startEditor(te) {
+        stopTreeObserver?.(); clearInterval(treeTimer)
+        lightingEditor?.scene?.removeEventListener('project-lighting-settings-changed', syncLightingSettings)
+        expandedCollections.clear(); lastSelectionId = null
         lightingEditor = te
-        Object.assign(lightingSettings, getRealisticLightingSettings())
+        te.scene.addEventListener('project-lighting-settings-changed', syncLightingSettings)
+        syncLightingSettings()
         scheduleRealisticLightingRefresh(te)
-        const { scene } = te
         loadSceneAnimations(te)
-        const push_obj = args => {
-            args.map(obj => {
-             shouldShowSceneObject(obj) && sceneObjList.unshift(obj)
-            })
-        }
-        push_obj(scene.children.filter(c => {
-            if(c.isTransformControlsRoot) return false
-            return shouldShowSceneObject(c)
-        }))
-        const sceneAdd = scene.add
-        scene.add = function (...args) {
-            args.forEach(obj => {
-                 push_obj([obj])
-            })
-            sceneAdd.apply(this, args)
-            updateSceneStats()
-        }
-        const sceneRemove = scene.remove
-        scene.remove = function (...args) {
-            args.forEach(obj => {
-                const index = sceneObjList.findIndex(i => i.id === obj.id)
-                if (index > -1) {
-                    sceneObjList.splice(index, 1)
+        stopTreeObserver = observeSceneHierarchy(te.scene, () => { refreshSceneTree(); updateSceneStats() })
+        refreshSceneTree(); updateSceneStats()
+        // Poll only selection and the displayed rows; never rebuild the full
+        // large model tree on animation frames or convert Three objects to Vue proxies.
+        treeTimer = setInterval(() => {
+            const selected = te.transformControls.object || te.effectComposer?.effectPass?.outlinePass?.selectedObjects?.[0]
+            selectedId.value = selected?.uuid || null
+            if (selected && selected.uuid !== lastSelectionId) {
+                lastSelectionId = selected.uuid
+                for (let parent = selected.parent; parent && parent !== te.scene; parent = parent.parent) expandedCollections.add(parent.uuid)
+                refreshSceneTree()
+                const index = treeRows.value.findIndex(row => row.id === selected.uuid)
+                if (index >= 0 && treeElement.value && (index < treeStart.value || index >= treeEnd.value)) {
+                    treeElement.value.scrollTop = index * ROW_HEIGHT; treeScroll.value = index * ROW_HEIGHT
                 }
-            })
-            sceneRemove.apply(this, args)
-            updateSceneStats()
-        }
+            } else if (virtualTreeRows.value.some(row => row.object.visible !== row.visible || (row.object.name || row.object.type) !== row.name)) refreshSceneTree()
+            if (!selected) lastSelectionId = null
+        }, 250)
     }
 });
 
 function selectObj(item) {
-   try {
-     if(item.visible == false) return
-     const i = threeEditor.scene.children.find(c => c.id === item.id)
-     threeEditor.transformControls.attach(i)
-   }
-    catch (error) {}
+    const editor = lightingEditor
+    if (!editor || !item?.parent) return
+    editor.handler.currentInfo = { object: item, rootObject: (() => { let root = item; while (root.parent && root.parent !== editor.scene) root = root.parent; return root })() }
+    editor.transformControls.detach()
+    editor.setOutlinePass?.([])
+    if (editor.handler.mode === 'transform') editor.transformControls.attach(item)
+    else editor.setOutlinePass?.([item])
+    selectedId.value = item.uuid
+    editor.transformControls.dispatchEvent({ type: 'change' })
 }
 
 const sceneSheets = ref([])
@@ -417,9 +477,17 @@ function sheetReset(i) {
     if (seq) { seq.pause(); seq.position = 0 }
 }
 
-function delI(item) {
-    const i = threeEditor.scene.children.find(c => c.id === item.id)
-    threeEditor.scene.remove(i)
+async function delI(item) {
+    if (!item?.parent) return
+    if (!lightingEditor?.modelCollectionEdits?.remove(item)) {
+        try { await ElMessageBox.confirm(`确定删除“${item.name || item.type}”？`, '删除对象', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }) }
+        catch { return }
+        item.removeFromParent()
+        lightingEditor?.transformControls.detach()
+        lightingEditor?.setOutlinePass?.([])
+        lightingEditor?.transformControls.dispatchEvent({ type: 'objectChange' })
+    }
+    selectedId.value = null; refreshSceneTree()
 }
 
 function clear() {
@@ -481,8 +549,14 @@ function clear() {
 .section-hint { margin: 7px 0; color: #899aac; font-size: 11px; line-height: 1.6; }
 .scene-content > .section-hint { flex-shrink: 0; margin: 7px 10px 4px; }
 .scene-tree { flex: 1; min-height: 0; margin: 0; padding: 3px 5px 8px; list-style: none; overflow: auto; scrollbar-width: thin; scrollbar-color: #43566a transparent; }
-.tree-item { display: flex; align-items: center; min-height: 31px; gap: 4px; padding: 1px 3px; border-radius: 4px; }
+.tree-search { flex-shrink: 0; min-width: 0; margin: 3px 8px 6px; padding: 6px 8px; border: 1px solid #43566a; border-radius: 4px; background: #1c242d; color: #d5dfeb; font: inherit; }
+.tree-item { display: flex; align-items: center; height: 32px; box-sizing: border-box; gap: 3px; padding: 1px 3px; border-radius: 4px; }
 .tree-item:hover { background: #2b3744; }
+.tree-item.is-selected { background: #304b66; }
+.tree-disclosure { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 18px; width: 18px; height: 26px; padding: 0; border: 0; color: #b7cadc; background: transparent; cursor: pointer; }
+.tree-disclosure.empty { color: #65798e; cursor: default; }
+.tree-disclosure:focus-visible, .tree-search:focus-visible { outline: 2px solid #82b9ed; outline-offset: -2px; }
+.object-kind { margin-right: 5px; color: #82b9ed; }
 .icon-button { display: inline-flex; flex: 0 0 24px; align-items: center; justify-content: center; width: 24px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #a9bbcd; cursor: pointer; font: inherit; }
 .icon-button:hover { color: #82b9ed; background: #344353; }
 .delete-button { color: #899aac; }

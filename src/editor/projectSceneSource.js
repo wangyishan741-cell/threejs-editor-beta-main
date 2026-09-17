@@ -47,3 +47,18 @@ export async function readProjectSceneSource({ sceneName, sceneUrl, immutable = 
     signal?.removeEventListener('abort', onAbort)
   }
 }
+
+/** An editable import link may resume its saved working copy after the first
+ * import. Ordinary immutable preview links continue to use the remote scene.
+ * The history source is the existing durable provenance shared by these files;
+ * a coincidentally equal local project name alone is never enough. */
+export async function resolveEditableImportedScene({ remote, sceneName, editableImport = false, readLocal } = {}) {
+  if (!editableImport || remote?.projectHistory?.mode !== 'restored'
+    || typeof remote.projectHistory.sourceVersionId !== 'string' || !remote.projectHistory.sourceVersionId) return remote
+  const local = await readLocal(sceneName)
+  if (!local || local.projectHistory?.mode !== 'restored'
+    || local.projectHistory.sourceVersionId !== remote.projectHistory.sourceVersionId
+    || local.nanjingRestore?.config?.sceneName && local.nanjingRestore.config.sceneName !== sceneName) return remote
+  // Do not conceal a damaged working copy by silently showing an older file.
+  return validateScene(local, true)
+}

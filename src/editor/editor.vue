@@ -13,19 +13,24 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import tamplateJson from './template.json'
 import { ThreeEditor } from './lib'
-import { scheduleRealisticLightingRefresh } from './lightingDefaults'
+import { scheduleRealisticLightingRefresh, installProjectLightingSettings } from './lightingDefaults'
 import { installMaterialPanel } from './materialPanel'
+import { installMaterialTexturePersistence } from './materialTexturePersistence.js'
 import { prepareNanjingSceneParams, installNanjingRestore, readNanjingSavedScene, readNanjingSharedAppearance } from './nanjingRestore'
 import { isNanjingBenchmarkBaseline } from './nanjingProfiler'
 import { getNanjingDeviceProfile } from './nanjingDeviceProfile'
 import { readNanjingDisplayQuality, resolveNanjingDisplayQuality } from './nanjingDisplayQuality'
 import { installNanjingLifecycle } from './nanjingLifecycle'
 import { readProjectScene, saveProjectScene } from './projectRecords.js'
-import { readProjectSceneSource } from './projectSceneSource.js'
+import { readProjectSceneSource, resolveEditableImportedScene } from './projectSceneSource.js'
 import { createProjectLoadState } from './projectLoadState.js'
 import { registerPostProcessingColor, installPostProcessingColorReset } from './postProcessingColor.js'
+import { registerPostProcessingBloom, installPostProcessingBloom } from './postProcessingBloom.js'
+import { createModelCollectionEdits } from './modelCollectionEdits.js'
+import { prepareNanjingRepairProject, NANJING_REPAIR_ENTRY, NANJING_REPAIR_SOURCE_NAME, NANJING_REPAIR_SOURCE_URL, getNanjingRepairProjectName } from './nanjingRepairProject.js'
 
 registerPostProcessingColor(ThreeEditor)
+registerPostProcessingBloom(ThreeEditor)
 ThreeEditor.dracoPath = __isProduction__ ? '/threejs-editor-beta/draco/' : '/draco/'
 
 // 初始渲染动画数据
@@ -34,6 +39,9 @@ if (THREE_EDITOR_ANIMATIONS) window.THREE_EDITOR_ANIMATIONS = JSON.parse(THREE_E
 
 let threeEditor = null
 let editorLifecycle = null
+let collectionEdits = null
+let materialTexturePersistence = null
+let projectLightingSettings = null
 let projectLoadState = null
 let componentDisposed = false
 let sceneRequest = 0
@@ -92,7 +100,16 @@ async function init() {
     let generation = projectLoadState.begin()
     try {
         
-        let sceneParams = await readProjectSceneSource({
+        const repairEntry = new URLSearchParams(window.location.hash.split('?')[1] || '').get('repair')
+        if (repairEntry === 'water-trees-20260917') throw new Error('旧修复入口的来源版本不正确。请打开 /nanjing-repaired.html，使用你指定的“最新效果版1”固定快照。')
+        const repairRequested = repairEntry === NANJING_REPAIR_ENTRY
+        if (repairRequested && sceneName !== getNanjingRepairProjectName(NANJING_REPAIR_SOURCE_NAME)) throw new Error('修复入口的工程名称不匹配，原工程未改变')
+        let sceneParams = repairRequested ? await prepareNanjingRepairProject({
+            name: sceneName, readLocal: readProjectScene, save: saveProjectScene,
+            sourceName: NANJING_REPAIR_SOURCE_NAME, sourceUrl: NANJING_REPAIR_SOURCE_URL,
+            fetcher: (url, options) => fetch(url, { ...options, signal: readController.signal }),
+            modelAssets: window.threeEditorDB?.list || [], isCurrent: () => isCurrentRequest(request, sceneName),
+        }) : await readProjectSceneSource({
             sceneName, sceneUrl: windowSceneUrl,
             immutable: window.editorPreviewSceneImmutable === true,
             fallback: tamplateJson, readLocal: readProjectScene, signal: readController.signal,
@@ -103,10 +120,14 @@ async function init() {
             try {
                 await saveProjectScene(sceneName, sceneParams, { createOnly: true, kind: 'import', label: '固定版本导入' })
             } catch (error) {
-                // The fixed URL still displays its immutable data; an existing
-                // local project is never replaced or given another version.
+                // Import once; do not overwrite an existing working project.
                 if (error?.code !== 'PROJECT_ALREADY_EXISTS') throw error
             }
+            if (!isCurrentRequest(request, sceneName)) return
+            sceneParams = await resolveEditableImportedScene({
+                remote: sceneParams, sceneName, readLocal: readProjectScene,
+                editableImport: new URLSearchParams(window.location.hash.split('?')[1] || '').get('edit') === '1',
+            })
             if (!isCurrentRequest(request, sceneName)) return
         }
         sceneParams = await readNanjingSavedScene(sceneParams, sceneName)
@@ -137,9 +158,14 @@ async function init() {
             sceneParams
         })
         installPostProcessingColorReset(threeEditor)
+        installPostProcessingBloom(threeEditor)
+        materialTexturePersistence = installMaterialTexturePersistence(threeEditor, sceneParams)
+        collectionEdits = createModelCollectionEdits(threeEditor, sceneParams)
+        for (const root of threeEditor.scene.children) collectionEdits.registerRoot(root, { pristine: false })
         projectLoadState.attach(threeEditor)
         editorLifecycle = installNanjingLifecycle(threeEditor)
         installNanjingRestore(threeEditor, sceneParams, { getProjectName: () => dataCores.sceneName })
+        projectLightingSettings = installProjectLightingSettings(threeEditor, sceneParams)
         installMaterialPanel(threeEditor)
     } catch (error) {
         if (!isCurrentRequest(request, sceneName)) return
@@ -174,7 +200,7 @@ onUnmounted(() => {
     sceneReadController?.abort()
     sceneRequest++
     window.removeEventListener('resize', handleResize)
-    try { threeEditor?.destroySceneRender() }
+    try { projectLightingSettings?.dispose(); materialTexturePersistence?.dispose(); collectionEdits?.dispose(); threeEditor?.destroySceneRender() }
     finally { projectLoadState?.dispose(); editorLifecycle?.destroy() }
 });
 
